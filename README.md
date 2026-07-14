@@ -11,6 +11,19 @@ a full reference for professional and beginners
 - **Copy-On-Write (CoW)**: When a container modifies a file from the image, it copies the file to the top read-write layer before making changes, leaving the original image layer untouched.
 
 ---
+## 9. The Dockerfile Reference
+
+|Instruction|Purpose|
+|:--|:--|
+|`FROM`|Defines the **base image** (e.g., Ubuntu, Python).|
+|`RUN`|Executes commands during the **build process** to install dependencies.|
+|`COPY`|Copies files/folders from the host to the image.|
+|`WORKDIR`|Sets the **working directory** for subsequent instructions.|
+|`ENV`|Sets environment variables within the image.|
+|`EXPOSE`|Informs Docker that the container listens on specific ports.|
+|`ENTRYPOINT`|Specifies the **command that will always run** at startup.|
+|`CMD`|Provides **default arguments** for the entrypoint (can be overridden).|
+___
 
 ## 2. Essential Commands Reference
 
@@ -109,19 +122,7 @@ ___
     - `docker service create --replicas=3 my-app`
 
 ---
-## 9. The Dockerfile Reference
 
-|Instruction|Purpose|
-|:--|:--|
-|`FROM`|Defines the **base image** (e.g., Ubuntu, Python).|
-|`RUN`|Executes commands during the **build process** to install dependencies.|
-|`COPY`|Copies files/folders from the host to the image.|
-|`WORKDIR`|Sets the **working directory** for subsequent instructions.|
-|`ENV`|Sets environment variables within the image.|
-|`EXPOSE`|Informs Docker that the container listens on specific ports.|
-|`ENTRYPOINT`|Specifies the **command that will always run** at startup.|
-|`CMD`|Provides **default arguments** for the entrypoint (can be overridden).|
-___
 
 **Analogy for Recall**: Imagine a **Shipping Port**. 
 An **Image** is a standardized blueprint for a crate; 
