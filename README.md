@@ -42,6 +42,7 @@ ___
 - **`docker system df`**: Show real-time disk usage by Docker objects.
 - **`docker system prune`**: Remove all unused containers, networks, and dangling images.
 - **`docker system prune -a --volumes`**: **High Danger.** Clears everything, including all unused images and all volumes.
+- **`docker builder prune --all`**: Reclaim disk space by removing the **build cache**. Targets the BuildKit cache specifically — the intermediate layers, mounts, and cached `RUN` steps left behind by image builds. Without `--all` it removes only *dangling* (unreferenced) build cache; with `--all` it purges the **entire** build cache, including layers still associated with existing images. Add `-f` to skip the confirmation prompt and `--filter until=24h` to keep only recent cache. Use it when `docker system df` shows a large "Build Cache" size that `docker system prune` alone did not fully reclaim.
 
 ---
 
