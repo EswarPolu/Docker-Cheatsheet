@@ -123,6 +123,66 @@ ___
 
 ---
 
+## 10. Multi-Stage Builds
+
+Multi-stage builds let you use **multiple `FROM` statements in a single Dockerfile**. Each `FROM` begins a new **stage**, and you selectively copy only the artifacts you need from one stage into the next. This keeps heavy build tooling (compilers, SDKs, dev dependencies) out of the **final image**, producing a small, secure production artifact.
+
+### Why Use Them
+
+- **Smaller Images**: The final image contains only the runtime and the compiled output — not the full build toolchain. Images can shrink from ~1 GB to tens of MB.
+- **Better Security**: Fewer packages in the final image means a smaller **attack surface** (no compilers, package managers, or build secrets left behind).
+- **Single Dockerfile**: Replaces the old "builder pattern" of maintaining two Dockerfiles plus shell scripts to copy artifacts between them.
+- **Better Layer Caching**: Dependency-install stages are cached and reused unless their inputs change, speeding up rebuilds.
+
+### How It Works
+
+- Each `FROM` starts a fresh stage; stages are numbered from `0` by default.
+- Name a stage with `AS <name>` so it can be referenced clearly.
+- Use `COPY --from=<stage>` to pull built artifacts from an earlier stage into the current one.
+- Only the **last stage** becomes the final image; earlier stages are discarded.
+
+### Example: Go Application
+
+```dockerfile
+# --- Stage 1: Build ---
+FROM golang:1.22 AS builder
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download          # Cached unless dependencies change
+COPY . .
+RUN CGO_ENABLED=0 go build -o /app/server ./cmd/server
+
+# --- Stage 2: Runtime ---
+FROM alpine:3.20
+WORKDIR /app
+COPY --from=builder /app/server /app/server   # Copy ONLY the binary
+EXPOSE 8080
+USER nobody                  # Run as non-root
+ENTRYPOINT ["/app/server"]
+```
+
+The `golang` image (~800 MB with the full toolchain) is used only to compile the binary. The final image is based on tiny `alpine` and carries just the compiled `server` binary.
+
+### Key Instructions & Commands
+
+|Syntax|Purpose|
+|:--|:--|
+|`FROM <img> AS <name>`|Start a named build stage.|
+|`COPY --from=<name> src dst`|Copy files from a previous stage into the current one.|
+|`COPY --from=<img> src dst`|Copy directly from an external image (e.g. `nginx:latest`).|
+|`docker build --target <name> .`|Build and stop at a specific stage (great for a **debug/test** stage).|
+|`FROM scratch`|Empty base image for statically-compiled binaries — the smallest possible image.|
+
+### Best Practices
+
+- **Order stages by change frequency**: install dependencies before copying source code so the dependency layer stays cached.
+- **Use minimal final bases**: `alpine`, `distroless`, or `scratch` for the runtime stage.
+- **Name every stage** (`AS builder`) instead of relying on numeric indexes — it is more readable and refactor-safe.
+- **Use `--target`** to build a dedicated `test` stage in CI without shipping test tooling to production.
+- **Keep secrets out of the final image**: build-time credentials used in an early stage never leak into the final layers.
+
+---
+
 
 **Analogy for Recall**: Imagine a **Shipping Port**. 
 An **Image** is a standardized blueprint for a crate; 
