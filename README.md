@@ -2,6 +2,11 @@
 a full reference for professional and beginners
 # 🐳 The Definitive Docker Professional Cheatsheet
 
+> 🛡️ **Security & enterprise practices:** see the companion
+> [Enterprise Docker DevSecOps — Best Practices & Security Guide](./DevSecOps-Docker-Best-Practices-Guide.md)
+> (CIS Benchmark v1.8.0, NIST SP 800-190, OWASP Docker Top 10, supply-chain signing, runtime hardening,
+> plus interview prep).
+
 ## 1. Core Concepts & Architecture
 
 - **Containers vs. Virtual Machines**: Each VM uses its own guest OS, whereas **all Docker containers share a single host OS kernel**, making them more lightweight
