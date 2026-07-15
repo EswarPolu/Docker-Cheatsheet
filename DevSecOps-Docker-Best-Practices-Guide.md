@@ -1,23 +1,30 @@
 # 🛡️ Enterprise Docker DevSecOps — Best Practices & Security Guide
 
-> A senior-engineer reference for building, shipping, running, and observing containers securely at
-> MNC scale. Written from the perspective of a 10+ year Docker/DevSecOps engineer, optimized both as
-> an operational playbook **and** as deep interview-prep material.
+> A staff-engineer reference for building, shipping, running, observing, and governing containers
+> securely at MNC scale. Written from a 10+ year Docker/DevSecOps perspective, optimized as an
+> operational playbook **and** deep interview-prep material.
 >
-> **Version 2** · Last reviewed **July 2026** · Standards baseline: CIS Docker Benchmark **v1.8.0**
-> (Aug 2025, Docker v28), NIST **SP 800-190**, OWASP **Docker Top 10**, SLSA **v1.0**, PCI-DSS **4.0.1**.
+> **Version 3** · Last reviewed **July 2026** · Standards baseline: CIS Docker Benchmark **v1.8.0**
+> (Aug 2025, Docker v28), NIST **SP 800-190**, OWASP **Docker Top 10**, SLSA **v1.0/1.1**,
+> PCI-DSS **4.0.1**, CISA **BOD 26-04**.
+>
+> ⚠️ **On dates/versions:** this guide cites fast-moving facts (CVE fix versions, regulatory
+> deadlines, tool GA states). Every such claim is flagged where it needs confirmation. Treat
+> standards-body facts (NIST/CIS/SLSA/CVEs) as solid; verify vendor/tooling specifics against current
+> docs before quoting in an audit or interview.
 
 ---
 
 ## Table of Contents
 
 0. [Mental Model & Threat Model](#0-mental-model--threat-model)
-- **Part I — BUILD:** [1. Base images](#1-base-image-selection) · [2. Dockerfile hardening](#2-multi-stage--dockerfile-hardening) · [3. BuildKit advanced](#3-buildkit-advanced-mounts--attestations) · [4. Reproducible & multi-arch](#4-reproducible--multi-arch-builds)
-- **Part II — SHIP:** [5. SBOM & SLSA](#5-supply-chain-sbom--slsa-provenance) · [6. Signing](#6-signing--verification) · [7. Registry](#7-registry-hardening) · [8. Vuln mgmt](#8-vulnerability-management) · [9. Admission](#9-admission-control--deploy-time-enforcement)
-- **Part III — RUN:** [10. Least privilege](#10-runtime-least-privilege) · [11. Rootless](#11-rootless--userns-remap-deep-dive) · [12. Sandboxed runtimes](#12-sandboxed-runtimes) · [13. Secrets](#13-secrets-management) · [14. Networking](#14-network-security) · [15. Host/daemon](#15-host--daemon-hardening)
-- **Part IV — OBSERVE:** [16. Runtime detection](#16-runtime-threat-detection) · [17. Logging & drift](#17-logging--drift-detection) · [18. Incident response](#18-incident-response--forensics)
-- **Part V — GOVERN:** [19. Compliance](#19-compliance--standards) · [20. CI/CD pipeline](#20-cicd-devsecops-pipeline)
-21. [Incident case studies](#21-incident-case-studies) · 22. [Audit checklist](#22-audit-checklist) · 23. [Interview Q&A](#23-interview-qa) · [References](#references--standards)
+- **I — BUILD:** [1 Base images](#1-base-image-selection) · [2 Dockerfile hardening](#2-dockerfile-hardening--anti-patterns) · [3 BuildKit internals](#3-buildkit-advanced-mounts--attestations) · [4 Reproducible/multi-arch](#4-reproducible--multi-arch-builds)
+- **II — SHIP:** [5 SBOM & SLSA](#5-supply-chain-sbom--slsa) · [6 Signing](#6-signing--verification) · [7 SBOM ops](#7-sbom--attestation-operations-at-scale) · [8 Registry](#8-registry-hardening) · [9 Vuln mgmt](#9-vulnerability-management-program) · [10 Admission](#10-admission-control--deploy-time-gating)
+- **III — RUN:** [11 Least privilege](#11-runtime-least-privilege) · [12 Kernel/LSM internals](#12-kernel--lsm-hardening-internals) · [13 Rootless](#13-rootless--user-namespaces) · [14 Sandboxed runtimes](#14-sandboxed-runtimes) · [15 Secrets](#15-secrets-management) · [16 Networking](#16-network-security) · [17 Host/daemon](#17-host--daemon-hardening)
+- **IV — OBSERVE:** [18 Detection](#18-runtime-threat-detection) · [19 Enforcement](#19-runtime-enforcement--drift-prevention) · [20 IR/forensics](#20-incident-response--forensics)
+- **V — ORCHESTRATE:** [21 Compose & Swarm](#21-docker-compose--swarm-security) · [22 Kubernetes](#22-kubernetes-workload-security)
+- **VI — GOVERN:** [23 Compliance](#23-compliance--standards) · [24 CI/CD & SLSA L3](#24-cicd-hardening--slsa-l3) · [25 Cloud services](#25-cloud-provider-container-security)
+26. [Incident case studies](#26-incident-case-studies) · 27. [Audit checklist](#27-audit-checklist) · 28. [Interview Q&A](#28-interview-qa) · [References](#references)
 
 ---
 
@@ -25,23 +32,23 @@
 
 Containers are **not** a security boundary by default — they are process isolation via Linux
 **namespaces + cgroups + capabilities + seccomp/LSM**, all sharing **one host kernel**. A container
-escape is a kernel/`runc` problem, not a hypervisor problem. Security is *defense in depth* across
-four planes plus governance:
+escape is a kernel/`runc` problem, not a hypervisor one. Security is *defense in depth* across five
+planes:
 
 | Plane | You defend | Primary controls |
 |:--|:--|:--|
 | **Build** | The image & how it's produced | Minimal base, multi-stage, no secrets in layers, SBOM, reproducibility |
-| **Ship** | Integrity in transit & at rest | Signing (Cosign/Notation), provenance (SLSA), trusted registry, admission |
-| **Run** | The live container & host | Non-root, cap-drop, seccomp/AppArmor, read-only FS, sandboxed runtimes |
-| **Observe** | The breach you didn't prevent | Falco/Tetragon, audit logs, drift detection, forensics |
+| **Ship** | Integrity in transit & at rest | Signing, provenance (SLSA), trusted registry, vuln gating, admission |
+| **Run** | The live container & host | Non-root, cap-drop, seccomp/LSM, read-only FS, sandboxed runtimes, kernel hardening |
+| **Observe** | The breach you didn't prevent | Falco/Tetragon, drift detection, forensics, IR |
 | **Govern** | Provable, repeatable assurance | CIS/NIST/STIG/PCI/FIPS, policy-as-code, evidence |
 
-**Golden rule:** *shift left, but don't trust left.* Prevent at build/admission time, and still watch
-at runtime — prevention always leaks (see [Leaky Vessels §21](#21-incident-case-studies)).
+**Golden rule:** *shift left, but don't trust left.* Prevent at build/admission time **and** watch at
+runtime — prevention always leaks (Leaky Vessels; the Nov-2025 runc trio — §26).
 
-> 💬 **Soundbite:** "A container shares the host kernel, so I treat isolation as defense-in-depth,
-> not a wall. Harden the build, sign & verify the supply chain, drop privileges at runtime, and run
-> eBPF detection to catch what slips through."
+> 💬 **Soundbite:** "A container shares the host kernel, so I treat isolation as defense-in-depth.
+> I harden the build, sign and verify the supply chain, drop privileges and sandbox at runtime, and
+> run eBPF detection + enforcement to catch what slips through."
 
 ---
 
@@ -49,41 +56,30 @@ at runtime — prevention always leaks (see [Leaky Vessels §21](#21-incident-ca
 
 ## 1. Base Image Selection
 
-Attack surface scales with package count. Fewer packages → fewer CVEs → smaller blast radius, faster
-pulls, less to patch. Preference order: **`scratch` → distroless → Chainguard/Wolfi → `alpine` →
-`-slim` → full OS.**
+Attack surface scales with package count. Preference order:
+**`scratch` → distroless → Chainguard/Wolfi → `alpine` → `-slim` → full OS.**
 
-### The minimal-base ecosystem (2025–2026)
 | Option | What it is | Notes |
 |:--|:--|:--|
-| **`scratch`** | Empty image | For static binaries (Go/Rust `CGO_ENABLED=0`). No shell, no libc. |
-| **Distroless** (`gcr.io/distroless/*`) | Google's runtime-only images | Variants: `static`, `base`, `cc`, language-specific (`java`, `nodejs`, `python3`); `:nonroot` (uid 65532) and `:debug` (adds busybox) tags. No shell/package manager. |
-| **Chainguard / Wolfi** | "Undistro" minimal images built with `apko`/`melange` | Near-zero CVEs, daily rebuilds, SBOM + provenance built in, **700+ FIPS variants**. Wolfi is the community base. |
-| **Docker Hardened Images (DHI)** | Docker's hardened catalog | **Free & open-source (Apache 2.0) since Dec 17 2025**; non-root by default, SLSA provenance, signed **VEX** attestations. |
-| **Alpine** | musl + busybox, ~5 MB | Tiny but has a shell/apk; musl can cause glibc-compat issues (DNS, some binaries). |
-| **`-slim` (Debian/Ubuntu)** | Trimmed glibc distro | Good compatibility, larger than Alpine. |
+| **`scratch`** | Empty image | Static binaries (Go/Rust `CGO_ENABLED=0`). No shell/libc. |
+| **Distroless** (`gcr.io/distroless/*`) | Runtime-only | Variants `static`/`base`/`cc`/language; `:nonroot` (uid 65532), `:debug` (busybox). No shell/pkg-mgr. |
+| **Chainguard / Wolfi** | Minimal "undistro" (built via `apko`/`melange`) | Near-zero CVE, **rebuilt within ~hours** of upstream fixes, SBOM+provenance built in, **700+ FIPS variants** (STIG-hardened, OSCAP reports, OpenSSL FIPS CMVP #4282). |
+| **Docker Hardened Images (DHI)** | Docker's hardened catalog | Free/OSS (Apache-2.0) since **Dec 17 2025**; non-root default, SLSA provenance, signed **VEX** attestations. |
+| **Alpine** | musl+busybox ~5 MB | Tiny but has shell/apk; musl glibc-compat quirks (DNS). |
+| **`-slim`** | Trimmed glibc distro | Best compatibility, larger. |
 
-### Language-native image builders (no Dockerfile, reproducible by design)
-- **`ko`** (Go) — builds distroless Go images without a Dockerfile or Docker daemon; produces SBOMs.
-- **`jib`** (Java, Maven/Gradle) — daemonless, reproducible, layered Java images.
-- **Cloud Native Buildpacks / Paketo** — turn source → OCI image with automatic rebase for OS patches.
-- **`apko`/`melange`** — declarative apk-based image assembly (the Chainguard/Wolfi toolchain).
+**Language-native, daemonless, reproducible builders (no Dockerfile):** `ko` (Go), `jib` (Java),
+Cloud Native Buildpacks/Paketo, `apko`/`melange` (Wolfi).
 
-### Pin by digest, never `latest`
-`latest` is mutable and non-reproducible. Pin **tag + digest** so the build is deterministic and
-tamper-evident:
-```dockerfile
-FROM python:3.12-slim@sha256:<digest>
-```
-Automate digest bumps with **Renovate** or **Dependabot** (Dockerfile support) so pinning doesn't
-mean stale/unpatched bases — the CVE-vs-reproducibility tension is solved by *automated* updates.
+**Pin by digest, never `latest`** (`python:3.12-slim@sha256:…`). Solve the CVE-vs-reproducibility
+tension with **automated** digest bumps: **Renovate** / **Dependabot** / **Digestabot** open PRs →
+CI validates → rebuild → rescan → merge on green.
 
 ---
 
-## 2. Multi-Stage & Dockerfile Hardening
+## 2. Dockerfile Hardening & Anti-Patterns
 
-**Multi-stage builds** keep compilers, SDKs, and build secrets out of the final image. Golden Go
-example (build → distroless):
+Golden multi-stage Go image (build tooling never reaches the final image):
 ```dockerfile
 # syntax=docker/dockerfile:1
 FROM golang:1.22@sha256:<digest> AS build
@@ -102,579 +98,735 @@ HEALTHCHECK --interval=30s --timeout=3s --retries=3 CMD ["/app","healthcheck"]
 ENTRYPOINT ["/app"]
 ```
 
-### Dockerfile anti-patterns to eliminate
-| Anti-pattern | Why it's bad | Fix |
+| Anti-pattern | Why | Fix |
 |:--|:--|:--|
-| `ADD` for local files / remote URLs | `ADD` auto-extracts tars and fetches URLs (SSRF/tamper risk) | Use `COPY`; fetch with a verified `RUN curl … && sha256sum -c` |
-| `ONBUILD` triggers | Hidden instructions run in *downstream* builds | Avoid in shared bases |
-| Unpinned `apt/apk/pip/npm` | Non-reproducible, cache-poisonable | Pin versions/hashes; `pip install --require-hashes`, `npm ci` w/ lockfile |
+| `ADD` for local/remote | Auto-extracts tars, fetches URLs (SSRF/tamper) | `COPY`; fetch with `curl … && sha256sum -c` |
+| `ONBUILD` triggers | Hidden downstream execution | Avoid in shared bases |
+| Unpinned apt/apk/pip/npm | Non-reproducible, cache-poisonable | Pin + hash: `pip --require-hashes`, `npm ci`, `go mod verify` |
 | Secrets in `ENV`/`ARG`/`COPY` | Persist in layers & `docker history`; leak in `mode=max` provenance | BuildKit secret mounts (§3) |
-| Package cache left in layer | Bloat | `--no-install-recommends` + `rm -rf /var/lib/apt/lists/*` **same** `RUN` |
-| Running as root | Escalation on escape | Create user + `USER` down |
-| Missing `.dockerignore` | Leaks `.git`, `.env`, keys into context | Maintain a strict `.dockerignore` |
-
-Combine cleanup in one layer (Debian):
-```dockerfile
-RUN apt-get update \
- && apt-get install -y --no-install-recommends curl ca-certificates \
- && rm -rf /var/lib/apt/lists/*
-```
+| Cache left in layer | Bloat | `--no-install-recommends` + `rm -rf /var/lib/apt/lists/*` same `RUN` |
+| Root at runtime | Escalation on escape | Create user + `USER` |
+| No `.dockerignore` | Leaks `.git`/`.env`/keys into context | Strict `.dockerignore` |
+| Shell-form `CMD`/`ENTRYPOINT` | Bad signal handling | Exec form `["…"]` |
 
 ---
 
 ## 3. BuildKit Advanced (Mounts & Attestations)
 
-All `RUN --mount` types need `# syntax=docker/dockerfile:1` and BuildKit (default in Engine 23.0+).
-The frontend is a sandboxed image pulled per build, so **Dockerfile features ship independently of
-the daemon** — `:1` gives automatic bugfixes; pin a digest for reproducibility.
+All `RUN --mount` types need `# syntax=docker/dockerfile:1` (BuildKit default in Engine 23.0+). The
+frontend is a sandboxed image pulled per build → **Dockerfile features ship independently of the
+daemon**; `:1` auto-gets bugfixes, pin a digest for reproducibility.
 
-### `--mount=type=cache` — build cache (perf, not correctness)
-Persistent scratch dir kept on the **builder host**; reattached across builds even when the RUN layer
-is rebuilt. **Not part of the image layer cache and not exported by `--cache-to`** → needs a
-persistent builder (or a build service) to survive ephemeral CI runners. Never rely on its contents.
-- `sharing` modes: `shared` (default, concurrent), `private` (per-writer copy), `locked` (serialize —
-  use for apt/dpkg locks). `id` scopes cache identity; set `uid`/`gid` so a non-root `USER` can write.
+**`--mount=type=cache`** — persistent scratch on the **builder host**; reattached across builds even
+when the RUN layer rebuilds. **Not part of the layer cache, not exported by `--cache-to`** → needs a
+persistent builder (or a build service) to survive ephemeral CI. Never rely on its contents.
+`sharing`: `shared`(default)/`private`/`locked` (use `locked` for apt/dpkg). Set `uid`/`gid` for
+non-root writers.
 ```dockerfile
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     rm -f /etc/apt/apt.conf.d/docker-clean && apt-get update && apt-get install -y gcc
 ```
 
-### `--mount=type=secret` — build secrets (never in layers)
-Exposed only for one `RUN`; default path `/run/secrets/<id>`, mode `0400`. `required=true` hard-fails
-if absent. `env=` form (frontend v1.10+) exposes as env var. Predefined `GIT_AUTH_TOKEN`/`HTTP_AUTH_*`
-for private contexts.
+**`--mount=type=secret`** — exposed only for one `RUN`; default `/run/secrets/<id>`, mode `0400`;
+`required=true`; `env=` form (frontend v1.10+). Predefined `GIT_AUTH_TOKEN`/`HTTP_AUTH_*` for private
+contexts.
 ```dockerfile
-RUN --mount=type=secret,id=npmtoken \
-    NPM_TOKEN=$(cat /run/secrets/npmtoken) npm ci
+RUN --mount=type=secret,id=npmtoken NPM_TOKEN=$(cat /run/secrets/npmtoken) npm ci
 ```
-```bash
-docker build --secret id=npmtoken,src=$HOME/.npmtoken .
-```
+`docker build --secret id=npmtoken,src=$HOME/.npmtoken .`
 
-### `--mount=type=ssh` — forward the agent for private git deps
-```dockerfile
-RUN --mount=type=ssh git clone git@gitlab.com:org/private.git
-```
-`docker buildx build --ssh default=$SSH_AUTH_SOCK .` (default id, socket mode `0600`).
+**`--mount=type=ssh`** (default id, socket mode `0600`) for private git deps:
+`docker buildx build --ssh default=$SSH_AUTH_SOCK .`
+**`--mount=type=bind`** (read-only default, `from=<stage>`, `rw` discarded) · **`type=tmpfs`** (`size=`).
 
-### `--mount=type=bind` / `type=tmpfs`
-`bind` is read-only by default (`from=<stage>` to pull artifacts without a `COPY` layer; `rw` writes
-are discarded). `tmpfs` is in-memory scratch (`size=`) for sensitive intermediates.
+**Selective bust:** `--no-cache-filter builder,test` (vs `--no-cache` all). **HEREDOC** (stable in
+`dockerfile:1.4`) collapses multi-line `RUN` into one layer.
 
-### Selective cache bust & heredoc
-- `docker buildx build --no-cache-filter builder,test .` busts only named stages (vs `--no-cache` all).
-- HEREDOC (stable in `dockerfile:1.4`) collapses multi-line `RUN` into one layer without `&& \`.
-
-### Attestations — provenance & SBOM
-BuildKit attaches **in-toto JSON attestations** into the image index. **Requires the
-`docker-container` buildx driver and pushing to a registry** — the default `docker` driver/exporter
-adds none and can't load attested indexes.
-- **Provenance (SLSA):** `mode=min` is default-on (container driver). `mode=max` adds the full LLB +
-  **base64 Dockerfile** — but **exposes build-ARG values**, so never pass secrets as ARGs.
-- **SBOM:** `--sbom=true` (Syft, SPDX). Expand scope with `ARG BUILDKIT_SBOM_SCAN_CONTEXT=true` /
-  `..._SCAN_STAGE=true`.
+**Attestations** — in-toto JSON in the image index. **Requires the `docker-container` buildx driver +
+push to a registry**; the default `docker` driver/exporter adds none and can't load attested indexes.
+- **Provenance (SLSA):** `mode=min` default-on (container driver); **`mode=max` exposes build-ARG
+  values + base64 Dockerfile** — never pass secrets as ARGs. Disable globally with
+  `BUILDX_NO_DEFAULT_ATTESTATIONS=1`.
+- **SBOM:** `--sbom=true` (Syft, SPDX); expand with `ARG BUILDKIT_SBOM_SCAN_CONTEXT/STAGE=true`.
 ```bash
 docker buildx create --driver docker-container --use
 docker buildx build --provenance=mode=max --sbom=true -t org/app:1.0 --push .
-docker buildx imagetools inspect org/app:1.0 --format "{{ json .Provenance.SLSA }}"
 ```
 
 ---
 
 ## 4. Reproducible & Multi-Arch Builds
 
-- **Reproducibility** makes provenance meaningful: same source → same digest, so a tampered build is
-  detectable. Levers: pinned base digests, lockfiles/hash-pinned deps, `SOURCE_DATE_EPOCH` to
-  normalize timestamps, `-trimpath`/`-ldflags="-s -w"` (Go), avoiding build-time nondeterminism.
-- **Multi-arch:** `docker buildx build --platform linux/amd64,linux/arm64 --push` builds a manifest
-  list (OCI image index) via QEMU emulation or native build nodes. Enterprises run **native build
-  farms** (arm64 + amd64 nodes) to avoid slow emulation and keep provenance per-arch.
+- **Reproducibility** makes provenance meaningful: pin base digests, lockfile+hash-pin deps,
+  `SOURCE_DATE_EPOCH` to normalize timestamps, `-trimpath`/`-ldflags="-s -w"`, avoid nondeterminism →
+  byte-identical rebuilds enable independent verification.
+- **Multi-arch:** `docker buildx build --platform linux/amd64,linux/arm64 --push` produces an OCI
+  image index via QEMU or native build nodes. Enterprises run **native build farms** (avoid slow
+  emulation; per-arch provenance).
 
 ---
 
 # Part II — SHIP
 
-## 5. Supply Chain: SBOM & SLSA Provenance
-
-Modern attackers poison the *pipeline*, not just prod. Controls form a chain of custody:
+## 5. Supply Chain: SBOM & SLSA
 
 | Control | Tool | Gives you |
 |:--|:--|:--|
-| **SBOM** | Syft, `docker sbom`, Trivy | Every package in the image (SPDX or CycloneDX) |
-| **Provenance** | BuildKit `--provenance`, SLSA | Tamper-evident record of source + builder |
+| **SBOM** | Syft, `docker sbom`, Trivy | Every package (SPDX or CycloneDX) |
+| **Provenance** | BuildKit `--provenance`, SLSA | Tamper-evident source+builder record |
 | **Signing** | Cosign / Notation | Cryptographic proof of origin |
-| **VEX** | OpenVEX + Scout/Trivy/Grype | Declares CVEs *not exploitable in context* → cuts noise |
+| **VEX** | OpenVEX + scanners | CVEs *not exploitable in context* → cuts noise |
 
-### SLSA v1.0 Build Levels (know these cold)
+### SLSA v1.0 Build Levels (memorize)
 | Level | Requirement | Guarantee |
 |:--|:--|:--|
-| **Build L1** | Provenance exists (builder id, source, artifact digest) | Auditability only — **forgeable** by anyone controlling the build env |
-| **Build L2** | Hosted build platform + **signed** provenance | Tampering requires an explicit attack; deters unsophisticated adversaries |
-| **Build L3** | Platform isolation; **signing keys inaccessible to build steps**; builds isolated | Strong tamper-resistance; forged provenance is hard |
-Cumulative (L3 ⊇ L2 ⊇ L1). Docker Hardened Images and GitHub Actions OIDC builds can reach **L3**.
-SBOM formats: **SPDX** (ISO standard, common in gov) vs **CycloneDX** (OWASP, security-focused).
+| **L1** | Provenance exists | Auditability only — **forgeable** |
+| **L2** | Hosted platform + **signed** provenance | Deters unsophisticated attackers |
+| **L3** | **Isolated** build; **signing key unreachable by build steps**; ephemeral per-build env; no cross-build cache poisoning | Non-forgeable provenance |
+Cumulative. **SLSA v1.1 approved Apr 2025** (clarifications, non-breaking). GitHub Artifact
+Attestations, `slsa-github-generator`, and Google Cloud Build reach **L3**.
+
+**SBOM formats:** **SPDX** (ISO/IEC 5962; 3.0 graph-based/profiles, Apr 2024) favored for
+license/regulatory; **CycloneDX** (OWASP → now Ecma TC54; 1.6 Apr 2024, adds CBOM + native VEX +
+attestations) favored for security. Tooling (Syft/Trivy) emits both. **SPDX↔CycloneDX conversion is
+lossy** (protobom/`sbom-convert`/`cyclonedx-cli`) — never assert round-trip fidelity.
 
 ---
 
 ## 6. Signing & Verification
 
-### Sigstore / Cosign — keyless signing (the modern default)
-No long-lived keys to leak. Flow: signer authenticates via **OIDC** → **Fulcio** issues a
-short-lived (~10 min) cert binding an ephemeral key to that identity → sign → record in **Rekor**
-(append-only transparency log). The private key lives in memory only, then is discarded.
+### Sigstore / Cosign — keyless (modern default)
+No long-lived keys. **Fulcio** issues a short-lived (~10 min) cert binding an ephemeral key to an
+**OIDC** identity → sign → record in **Rekor** (append-only transparency log; **Rekor v2 GA 2025**,
+tile-based). Private key lives in memory only. Roots of trust for Fulcio/Rekor distributed via **TUF**
+(supports private/air-gapped roots). Monitor with **rekor-monitor** (consistency proofs + alert on
+unexpected use of *your* signing identity).
 ```bash
-# sign (keyless, in CI with the workflow's OIDC identity)
-COSIGN_EXPERIMENTAL=1 cosign sign <registry>/app@sha256:<digest>
-# attach an SBOM attestation
-syft <image> -o spdx-json > sbom.spdx.json
-cosign attest --predicate sbom.spdx.json --type spdxjson <image>
-# verify (enforce identity + issuer)
+cosign sign <registry>/app@sha256:<digest>          # keyless (CI OIDC)
 cosign verify <image> \
   --certificate-identity-regexp 'https://github.com/org/.*' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
-Forging a signature requires compromising the OIDC provider **and** Fulcio **and** Rekor at once.
+Forging requires compromising OIDC **and** Fulcio **and** Rekor simultaneously.
 
 ### Notation (Notary Project / "Notary v2")
-Spec-driven signing built on **X.509 cert chains** (existing enterprise PKI, not TUF). Supports
-**multiple signatures** per image (e.g. vendor + internal approval), OCI-standard signatures stored
-in the registry. Choose Notation when you need PKI integration / multi-party approval; Cosign for
-developer-friendly keyless.
+Spec-driven, built on **X.509 cert chains** (enterprise PKI, not TUF); supports **multiple signatures**
+(vendor + internal approval); OCI-standard signatures in the registry. Choose for PKI/multi-party;
+Cosign for dev-friendly keyless.
 
 ### Docker Content Trust is retired — migrate off
-DCT deprecation began **Mar 31 2025**; signing certs expired **Aug 8 2025**; can't enable on new
-registries after **Sep 30 2025**; data deleted **Mar 31 2028**. (<0.05% of pulls used it; old Notary
-unmaintained.) **Migrate to Cosign or Notation.**
+Deprecation began **Mar 31 2025**; certs expired **Aug 8 2025**; no new registries after
+**Sep 30 2025**; data deleted **Mar 31 2028**. Azure ACR: DCT can't be enabled on new registries from
+**May 31 2026**, removed **Mar 31 2028**. Migrate to **Cosign or Notation**.
 
 ---
 
-## 7. Registry Hardening
+## 7. SBOM & Attestation Operations at Scale
 
-The registry is where enterprise container trust is enforced. Whether **Harbor** (CNCF, self-hosted)
-or a cloud registry (**ECR / Google Artifact Registry / ACR**):
-
-- **RBAC & robot/service accounts** — CI/CD uses scoped, **expiring** robot tokens per project, never
-  human creds or long-lived keys. Cloud: least-privilege IAM pull roles, short-lived tokens (OIDC).
-- **Tag immutability** — forbid overwriting a pushed tag; **deploy by digest** for true reproducibility.
-- **Retention & GC** — e.g. "keep last 5 `prod-*`, delete anything not pulled in 30 days"; run garbage
-  collection to reclaim storage.
-- **Built-in scanning** — Harbor ships **Trivy** on by default; ECR/GAR/ACR have native scanning.
-  **Quarantine** images above a CVE threshold.
-- **Content-trust policy** — configure the project so **only signed artifacts** (Cosign/Notation) can
-  be pulled.
-- **Network** — private endpoints/VPC only; TLS; replication for DR; no anonymous pull for private repos.
-
----
-
-## 8. Vulnerability Management
-
-Scan **continuously** — in dev, in CI (gate), and in the registry (new CVEs appear for images you
-already shipped).
-
-| Scanner | Notes |
-|:--|:--|
-| **Docker Scout** | Native to Docker CLI/Desktop; applies **VEX** from DHI with zero config |
-| **Trivy** | Ubiquitous OSS; images, IaC, SBOM; VEX via VEX Hub; default scanner in Harbor |
-| **Grype** | Fast, SBOM-driven; `--vex` flag |
-
+- **in-toto / DSSE:** DSSE Envelope → Statement (`_type: https://in-toto.io/Statement/v1`, `subject`
+  digests, `predicateType`) → Predicate. PAE signs both payload + type (anti type-confusion).
+- **Predicate types:** SLSA provenance `https://slsa.dev/provenance/v1`, **VSA**
+  `https://slsa.dev/verification_summary/v1`, SPDX, CycloneDX, VEX, test results.
+- **VSA (Verification Summary Attestation):** a trusted verifier records a prior verification (incl.
+  transitive `dependencyLevels`) so consumers skip re-verifying.
+- **OCI Referrers API (Image/Distribution 1.1):** attach SBOMs/signatures/attestations to an image via
+  `/v2/<name>/referrers/<digest>` — no extra tags. Attach with `oras attach`, list with
+  `oras discover`. Supported by Quay, ACR, ECR (Harbor in progress).
+- **Storage/query at scale:** **OWASP Dependency-Track** (ingest CycloneDX once, monitor continuously
+  against NVD/OSV/GHSA — new CVEs surface against shipped images without rescanning) and **GUAC**
+  (graph of SBOMs/provenance; `guacone query vuln/dependents` for blast-radius).
 ```bash
-docker scout cves myapp:1.2.3
-trivy image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 myapp:1.2.3   # CI gate
+syft $IMG -o cyclonedx-json=sbom.cdx.json
+cosign attest --type cyclonedx --predicate sbom.cdx.json --new-bundle-format $IMG
+cosign verify-attestation --type cyclonedx \
+  --certificate-identity-regexp '^https://github.com/ORG/repo/.+' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com $IMG
 ```
-**Policy:** fail CI on **fixable** HIGH/CRITICAL. Use **VEX/OpenVEX/CSAF** to suppress CVEs assessed
-not-exploitable-in-context so teams fix real risk instead of chasing noise.
+> ⚠️ `cosign attach sbom` is deprecated → use attestations. cosign **v3** split `spdx` (tagvalue) vs
+> `spdxjson`; flags churn — pin to your installed version.
+
+**Regulatory drivers:** US **CISA 2025 Minimum Elements** (draft; adds component hash, license, tool
+name, generation context, transitive coverage — *verify final publication*). EU **CRA** in force
+Dec 2024; 24-h exploited-vuln reporting to ENISA from **Sep 11 2026**; full compliance (SBOM,
+secure-by-design, CE) by **Dec 11 2027**; penalties up to €15M / 2.5% turnover.
 
 ---
 
-## 9. Admission Control & Deploy-Time Enforcement
+## 8. Registry Hardening
 
-Enforce policy *before* a workload runs (this is the enforcement point for everything above).
+Harbor (CNCF, self-hosted) or cloud (ECR/GAR/ACR):
+- **RBAC + robot/service accounts** — CI uses scoped, **expiring** tokens per project; cloud uses
+  least-privilege IAM + short-lived OIDC (no stored password).
+- **Tag immutability** — forbid overwrite; **deploy by digest**. (ECR added immutability *exceptions*
+  Jul 2025; ACR uses per-repo write-lock.)
+- **Retention & GC** — e.g. "keep last 5 `prod-*`, delete unpulled >30 d".
+- **Built-in scanning** — Harbor ships **Trivy** on by default; **quarantine** on CVE threshold.
+- **Content-trust policy** — only signed (Cosign/Notation) artifacts pullable.
+- **Network** — private endpoints/Private Link/VPC-SC; TLS; replication for DR.
+
+---
+
+## 9. Vulnerability Management Program
+
+> **This is the section a shallow guide gets wrong.** Two 2026 shifts break the old "sort by CVSS,
+> patch CRITICALs" playbook:
+
+1. **NVD enrichment collapse (permanent).** From **Apr 15 2026**, NIST enriches only CVEs in **CISA
+   KEV**, federal-gov software, and EO-14028 critical software (~15–20% of volume). Everything else:
+   no CVSS/CPE/CWE. **You cannot depend on NVD** — pull from **OSV.dev** (fastest, PURL-precise),
+   **GHSA**, and distro feeds (Alpine secdb, Debian, RHEL OVAL, Ubuntu USN — essential for
+   *backport-patched* packages). Union of NVD+OSV+GHSA ≈ 98% coverage → **multi-feed scanners win**.
+2. **CISA BOD 26-04 (Jun 10 2026)** retires CVSS-deadline SLAs for a **risk matrix**: 4 variables —
+   (1) publicly exposed, (2) in KEV, (3) automatable, (4) total vs partial technical impact — → 16
+   tiers (3 days for KEV+total-control, up to "next upgrade"). Mirror these variables internally
+   instead of raw CVSS.
+
+**Prioritize:** `KEV (act now) → EPSS (percentile/prob cut, e.g. ≥0.95 pctl) → reachability/exposure
+→ CVSS-BTE`. **EPSS v4** (2025) = daily-refreshed exploitation probability; never a standalone risk
+score. **CVSS v4.0** adds Attack Requirements + Supplemental group (only CVSS-B = half the picture).
+**Reachability** (Endor/Snyk function-level; Wiz/Prisma runtime) deprioritizes CVEs your code never
+calls — the biggest noise reducer.
+
+**VEX** (OpenVEX): statuses `not_affected`/`affected`/`fixed`/`under_investigation`; `not_affected`
+needs a justification enum (`vulnerable_code_not_in_execute_path`, etc.). Distribute via **VEX Hub**,
+OCI attestation (`cosign attest --type openvex`), or internal repo; consume with
+`trivy --vex` / `grype --vex` / Docker Scout (auto, zero-config). Prefer VEX over opaque
+`.trivyignore` (govern residual ignores with **reason + expiry** in `.trivyignore.yaml`).
+
+**Scanners:** run **two and reconcile** — **Trivy** (higher recall, more backport FPs) + **Grype**
+(precise, lower FP). **Docker Scout** for Docker-centric + auto-VEX. **Wiz/Prisma (CNAPP)** correlate
+image↔running↔exposure↔data for best noise reduction at scale.
+
+**Remediate:** rebuild by default (clean provenance); **Project Copacetic (`copa patch`)** applies
+OS-package fixes as one patch layer for **emergency KEV turnaround** without a rebuild (OS packages
+only — app deps still need rebuild). Scan at **build (gate) + continuously in registry** (CVE data
+changes even when the image doesn't).
+
+---
+
+## 10. Admission Control & Deploy-Time Gating
+
+Enforce policy *before* a workload runs — the choke point for everything above.
 
 | Engine | Language | Strengths |
 |:--|:--|:--|
-| **Pod Security Admission** | built-in labels | Baseline/Restricted profiles; zero-install, coarse |
-| **OPA Gatekeeper** | **Rego** | Powerful, portable OPA ecosystem; validation-focused |
-| **Kyverno** | **YAML** (K8s-native) | Validate + **mutate** + **generate** + **verifyImages** (Cosign); lightweight |
-| **ValidatingAdmissionPolicy** | **CEL** (in-tree) | **GA in v1.30**; no external controller; `Deny`/`Warn`/`Audit` |
+| **Pod Security Admission** | built-in labels | Baseline/Restricted; zero-install, coarse |
+| **OPA Gatekeeper** | **Rego** | Powerful, portable; validation-focused |
+| **Kyverno** | **YAML** | Validate + mutate + generate + **verifyImages** (Cosign/Notary); lightweight |
+| **ValidatingAdmissionPolicy** | **CEL** (in-tree) | **GA v1.30**; no controller; Deny/Warn/Audit |
 
-**Common enforced policies:** block `:latest`; block `runAsNonRoot: false`; block `privileged`,
-`hostPath`, `hostNetwork`, `hostPID`; require dropped caps + `readOnlyRootFilesystem`; require resource
-limits; **require a valid Cosign signature** and allow images only from an approved registry allowlist.
+**Enforce:** block `:latest`, `runAsNonRoot:false`, `privileged`, `hostPath`/`hostNetwork`/`hostPID`;
+require dropped caps + `readOnlyRootFilesystem` + resource limits; **require a valid signature +
+SLSA-provenance attestation** and an approved-registry allowlist.
 
-**Signature verification at admission:** Kyverno `verifyImages`, sigstore **policy-controller**,
-**Connaisseur**, or **Ratify** — each checks the Cosign signature/attestations before admitting.
-Pair with **zero-trust workload identity** (SPIFFE/SPIRE, IRSA / GKE Workload Identity) so pods
-authenticate to registries/secret stores without static creds.
+**Signature/provenance verification at admission:** Kyverno `verifyImages`/`ImageValidatingPolicy`,
+sigstore **policy-controller** (`ClusterImagePolicy`, CUE/Rego), **Connaisseur**, **Ratify**. Pair
+with **zero-trust workload identity** (SPIFFE/SPIRE, IRSA / GKE Workload Identity) so pods
+authenticate without static creds. Gate **in-pipeline** (`slsa-verifier`/`cosign` non-zero fails the
+deploy) **and** at admission — defense in depth.
 
 ---
 
 # Part III — RUN
 
-## 10. Runtime Least Privilege
+## 11. Runtime Least Privilege
 
-Where most real-world containers fail. Baseline:
-
-| Control | Flag / setting | Why |
+| Control | Flag | Why |
 |:--|:--|:--|
-| Non-root user | `USER 65532` / `--user` | Never run the app as root |
-| Drop all caps | `--cap-drop=ALL` + minimal `--cap-add` | Removes Docker's ~14 default caps |
-| No new privileges | `--security-opt=no-new-privileges` | Blocks setuid escalation (`PR_SET_NO_NEW_PRIVS`) |
-| Read-only rootfs | `--read-only` + `--tmpfs /tmp` | Immutable runtime; write only to volumes |
-| Seccomp | default profile / custom | Shrinks syscall attack surface |
-| AppArmor / SELinux | `docker-default` / custom | MAC confinement of files/net/caps |
-| Limits | `--cpus`, `--memory`, `--pids-limit` | Contain fork bombs / noisy-neighbor DoS |
-| No `--privileged` | *never in prod* | All caps + device access = trivial escape |
-| No socket mount | avoid `-v /var/run/docker.sock` | = root on the host |
+| Non-root | `--user 65532` | Never run app as root |
+| Drop caps | `--cap-drop=ALL` + minimal add | Removes Docker's ~14 default caps |
+| No new privs | `--security-opt=no-new-privileges` | Blocks setuid escalation (`PR_SET_NO_NEW_PRIVS`) |
+| Read-only rootfs | `--read-only` + `--tmpfs /tmp` | Immutable runtime |
+| seccomp | default / custom | Shrinks syscall surface |
+| AppArmor/SELinux | `docker-default` / profile | MAC confinement |
+| Limits | `--cpus`/`--memory`/`--pids-limit` | Fork-bomb & noisy-neighbor DoS |
+| No `--privileged` | never in prod | All caps + devices = trivial escape (disables seccomp/AppArmor even if named) |
+| No socket mount | avoid `-v /var/run/docker.sock` | = host root |
 
-### Dangerous capabilities — never grant casually
-| Capability | Risk |
-|:--|:--|
-| **CAP_SYS_ADMIN** | "the new root" — mount, namespaces, huge surface; common escape primitive |
-| **CAP_SYS_MODULE** | Load kernel modules → trivial host takeover |
-| **CAP_SYS_PTRACE** | `ptrace`/`process_vm_readv`; can bypass seccomp; lethal with shared host PID ns |
-| **CAP_DAC_READ_SEARCH** | Bypass file read perms (Shocker / `open_by_handle_at` escape) |
-| **CAP_NET_RAW** | Raw packets → ARP/DNS spoofing, lateral movement |
-| **CAP_NET_ADMIN**, **CAP_SETUID/SETGID**, **CAP_SYS_BOOT**, **CAP_SYS_TIME** | Various escalation/host-impact |
-Safe common add-back: **`NET_BIND_SERVICE`** (ports <1024).
+**Dangerous capabilities — never grant casually:** **CAP_SYS_ADMIN** ("the new root" — mount,
+namespaces), **CAP_SYS_MODULE** (load kernel modules → escape), **CAP_SYS_PTRACE** (bypass seccomp,
+lethal with shared host PID ns), **CAP_DAC_READ_SEARCH** (Shocker `open_by_handle_at`),
+**CAP_NET_RAW** (ARP/DNS spoof), CAP_NET_ADMIN, CAP_SETUID/SETGID, CAP_SYS_BOOT/TIME. Safe common
+add-back: **NET_BIND_SERVICE**.
 
-### Hardened `docker run`
 ```bash
 docker run -d --user 65532:65532 \
   --read-only --tmpfs /tmp:rw,noexec,nosuid,size=64m \
   --cap-drop=ALL --cap-add=NET_BIND_SERVICE \
   --security-opt=no-new-privileges \
   --security-opt seccomp=/etc/docker/seccomp/app.json \
-  --pids-limit=200 --cpus=1 --memory=512m --memory-swap=512m \
-  --restart=on-failure:3 myapp:1.2.3
+  --pids-limit=200 --cpus=1 --memory=512m --memory-swap=512m myapp:1.2.3
 ```
-
-### seccomp / AppArmor / SELinux
-- **seccomp:** Docker's default profile blocks ~44 of 300+ syscalls (e.g. `kexec_load`,
-  `perf_event_open`, `add_key`, namespace-creation). `--security-opt seccomp=unconfined` disables it —
-  avoid. Author custom profiles to allow-list only what the workload needs.
-- **AppArmor** (`docker-default`) and **SELinux** (svirt, `--security-opt label=…`, MCS categories)
-  provide mandatory access control; use custom profiles for sensitive workloads.
+Docker's **default seccomp** blocks ~44–50+ syscalls (`kexec_load`, `perf_event_open`, `add_key`,
+`unshare`, `mount`, ns-creation). `seccomp=unconfined` disables it — avoid.
 
 ---
 
-## 11. Rootless & userns-remap Deep Dive
+## 12. Kernel & LSM Hardening Internals
 
-Common interview trap — know the difference:
+**Namespaces** (`clone`/`unshare`/`setns`; `/proc/PID/ns/`): mnt, pid, net, **user**, cgroup, uts,
+ipc, time. Docker enables mnt/uts/ipc/pid/net by default; **user ns is opt-in**. Escape-relevant:
+bind-mounting host paths (mnt), `--pid=host`/`--net=host`, and **nf_tables inside a netns** (the single
+largest LPE surface behind userns).
 
-- **userns-remap:** the *daemon still runs as root*, but container UID 0 maps to an unprivileged host
-  UID (via `/etc/subuid`/`/etc/subgid`). Keeps full Docker features; mitigates container-root =
-  host-root.
-- **Rootless mode:** the *daemon itself* runs as a non-root user inside a user namespace. Strongest
-  posture. Real trade-offs:
-  - **Networking:** uses `slirp4netns` (5–10% overhead, NAT); the newer **`pasta`** driver avoids NAT
-    for better throughput.
-  - **Ports <1024:** blocked by default (needs `net.ipv4.ip_unprivileged_port_start` or `setcap`).
-  - **Resource limits:** need **cgroup v2 with delegation**; by default only `memory`+`pids` are
-    delegated to non-root — without full delegation Docker runs but **can't enforce cpu limits**.
-  - Some storage drivers / volume-permission quirks with ACLs.
+**LSMs:** one *major/exclusive* (SELinux | AppArmor | Smack) + stackable *minor* (capability, YAMA,
+LoadPin, SafeSetID, **BPF-LSM**, **Landlock**). SELinux (`container_t` + MCS) is strongest/complex;
+AppArmor (`docker-default`) is path-based/simpler. **Landlock** = unprivileged self-sandboxing (ABI
+1→8 across kernels 5.13→7.0).
 
-Prefer **rootless** for multi-tenant / untrusted workloads; userns-remap as a lighter middle ground.
+**seccomp deep:** return actions high→low `KILL_PROCESS > KILL_THREAD > TRAP > ERRNO > USER_NOTIF >
+TRACE > LOG > ALLOW`. **User-notification** lets a supervisor emulate syscalls (runc/crun use it for
+`mount`) — **TOCTOU caveat:** `seccomp_data` carries register values not deref'd pointers → re-read
+`/proc/PID/mem` + `NOTIF_ID_VALID`. Generate profiles with **oci-seccomp-bpf-hook**, **Inspektor
+Gadget**, or **Security Profiles Operator**.
+
+**KSPP sysctls (container-relevant):**
+```
+kernel.kptr_restrict=2      kernel.dmesg_restrict=1     kernel.modules_disabled=1
+kernel.kexec_load_disabled=1  kernel.yama.ptrace_scope=3  kernel.unprivileged_bpf_disabled=1
+net.core.bpf_jit_harden=2   vm.unprivileged_userfaultfd=0  user.max_user_namespaces=0*
+fs.protected_symlinks=1  fs.protected_hardlinks=1  fs.suid_dumpable=0
+```
+`*` disabling userns conflicts with rootless/K8s — see §13. **Kernel Lockdown LSM** (boot-set,
+irreversible): `integrity` (block kernel modification) / `confidentiality` (+ block kernel-mem
+readback → defeats KASLR leaks). Verify with **kernel-hardening-checker**.
+
+**cgroups v2:** `memory.max`/`memory.high` (`--memory`), `pids.max` (`--pids-limit`, **fork-bomb
+defense**), `cpu.max` (`--cpus`), `io.max`. **Device control is now eBPF** (`BPF_PROG_TYPE_CGROUP_DEVICE`;
+v1 `devices.allow` gone). v2 removed `release_agent` from delegated subtrees → closed the classic v1
+cgroup escape.
 
 ---
 
-## 12. Sandboxed Runtimes
+## 13. Rootless & User Namespaces
 
-When container isolation isn't enough (untrusted code, hostile multi-tenancy), swap the OCI runtime:
+- **userns-remap:** *daemon still root*, container UID 0 → unprivileged host UID (`/etc/subuid`).
+  Keeps full features; mitigates container-root = host-root.
+- **Rootless:** *daemon itself* unprivileged. Strongest, with trade-offs: networking via
+  `slirp4netns` (5–10% NAT overhead; newer **`pasta`** avoids NAT); **ports <1024 blocked** by
+  default; **resource limits need cgroup v2 + delegation** (only memory+pids delegated by default —
+  no CPU limit without full delegation); AppArmor/overlay-networks/`--privileged`/checkpoint
+  unsupported (so **Swarm is effectively non-functional rootless**).
+
+⚠️ **The userns tension:** unprivileged user namespaces are the rootless enabler **and** a major LPE
+surface (Edera 2026: +262% reachable kernel ops; ~43% of userns-gated CVEs are nf_tables). KSPP/Edera
+advise disabling them; K8s (2025) and rootless *depend* on them. Ubuntu 24.04 gates them per-binary
+via AppArmor (Qualys disclosed 3 bypasses in 2025). **Present as an environment-dependent trade-off,
+not a blanket "disable."** Two distinct knobs: `kernel.unprivileged_userns_clone=0` (Debian/Ubuntu
+only) + `user.max_user_namespaces=0` (mainline/RHEL).
+
+---
+
+## 14. Sandboxed Runtimes
+
+When container isolation isn't enough (untrusted/AI-generated code, hostile multi-tenancy), swap the
+OCI runtime:
 
 | Runtime | Mechanism | Isolation | Cost | Use when |
 |:--|:--|:--|:--|:--|
-| **runc** | Namespaces/cgroups | Baseline | None | Trusted internal workloads |
-| **gVisor** (`runsc`) | Userspace kernel (**Sentry**, Go) intercepts syscalls | Strong, no VM | ~34% network hit; syscall-compat gaps | Medium-threat multi-tenant SaaS |
-| **Kata Containers** | Lightweight **VM per pod**, own kernel (K8s `RuntimeClass`) | Hardware-level | ~6% network hit | High-threat, strong isolation, production-ready |
-| **Firecracker** | Minimal Rust **microVM** (~5 MiB, ~125 ms cold start) | Hardware-level | Needs orchestration | Serverless/FaaS (Lambda/Fargate); usually via Kata |
-| **Sysbox** | Extends runc; run Docker/K8s/systemd **inside** containers | Enhanced, no `--privileged` | Low | Rootless DinD, CI runners |
+| **runc** | namespaces/cgroups | baseline | none | Trusted internal |
+| **gVisor** (`runsc`) | userspace kernel "Sentry" intercepts syscalls | strong, no VM | ~34% net hit; syscall-compat gaps | Medium-threat multi-tenant (GKE Sandbox, "Agent Sandbox" for AI code) |
+| **Kata** | lightweight VM per pod, own kernel (`RuntimeClass`) | hardware | ~6% net hit | High-threat, production-ready |
+| **Firecracker** | minimal Rust microVM (~5 MiB, ~125 ms cold start) | hardware | needs orchestration | Serverless/FaaS (Lambda/Fargate); usually via Kata |
+| **Sysbox** | extends runc | enhanced, no `--privileged` | low | Rootless DinD, CI runners, systemd-in-container |
 
-Threat-model guidance: **low/internal → runc; medium multi-tenant → gVisor; high/untrusted →
-Kata or Firecracker.**
+Guidance: **low/internal → runc; medium multi-tenant → gVisor; high/untrusted → Kata or Firecracker.**
 
 ---
 
-## 13. Secrets Management
+## 15. Secrets Management
 
-**Never in an image layer or `docker history`.** `ENV`, `ARG`, `COPY .env` all persist.
+**Never in a layer/`docker history`.** Build-time → BuildKit `--mount=type=secret`. Runtime → a store.
 
-| Need | Do | Don't |
-|:--|:--|:--|
-| Build-time | BuildKit `--mount=type=secret` (§3) | `ARG TOKEN=` / `ENV TOKEN=` |
-| Runtime | Injected from a secret store | Baked into the image |
-
-### Kubernetes/runtime secret stores (2025–2026)
 | Tool | Model | Notes |
 |:--|:--|:--|
-| **HashiCorp Vault — Agent Injector** | Sidecar renders secrets to a shared memory volume | App stays Vault-unaware; supports dynamic secrets |
-| **Vault CSI / Vault Secrets Operator** | Mount via CSI (no sidecar) | **CSI keeps secrets out of etcd**; recommended for new deploys |
-| **External Secrets Operator (ESO)** | Syncs cloud secret managers → K8s Secrets | 40+ providers; easiest if you already use AWS/GCP/Azure secret managers |
-| **SOPS** (CNCF) | File-level encryption with KMS/`age` | GitOps-native (Flux/ArgoCD); encrypted files portable |
-| **Sealed Secrets** | Controller decrypts cluster-side | Simple GitOps; cluster-scoped key |
-| **SPIFFE/SPIRE** | Workload identity (SVIDs) | Keyless auth to Vault/cloud without static creds |
+| **Vault Agent Injector** | sidecar renders to shared-mem volume | App stays Vault-unaware; best for **dynamic secrets** + lease renewal |
+| **Vault CSI / Secrets Operator** | CSI mount / CRD sync | **CSI keeps secrets out of etcd**; HashiCorp now recommends **VSO** as default |
+| **External Secrets Operator** | syncs cloud managers → K8s Secrets | 40+ providers; easiest with cloud secret managers |
+| **SOPS** (CNCF) | file encryption (KMS/`age`) | GitOps-native (Flux/ArgoCD); portable |
+| **SPIFFE/SPIRE** | workload identity (SVIDs) | Keyless auth; solves secret-zero |
 
-Detect leaked secrets in images/history with **TruffleHog** (verifies creds against live APIs, peels
-image layers) and **gitleaks** (fast regex, git-focused).
+**Dynamic secrets (Vault):** DB engine mints a fresh per-request user (TTL 15–30 m), PKI issues
+short-lived certs, cloud engines mint STS creds. `database/rotate-root` so no human holds the
+bootstrap password. Auth via **Kubernetes auth** (TokenReview — catches revocation) over
+JWT/OIDC/AppRole (AppRole reintroduces secret-zero).
+
+**The secret-zero problem** → **workload identity**: derive the first credential from platform
+attestation, not a stored key. **SPIFFE/SPIRE** (node + workload attestation → auto-rotated SVIDs);
+cloud federation (**AWS IRSA / EKS Pod Identity**, **GKE Workload Identity**, **Azure Workload
+Identity**); **GitHub Actions OIDC → cloud** (`permissions: id-token: write`, lock the trust-policy
+`sub` to `repo:ORG/REPO:ref:…`).
+
+**Leaked-secret playbook (order matters):** **REVOKE/ROTATE FIRST**, then scrub history — deleting the
+commit is *not* enough (earlier commits, clones, CI caches, and **forks** persist). Detect with
+**TruffleHog** (verifies creds against live APIs) + **gitleaks** + GitHub push-protection; purge with
+`git-filter-repo`/BFG + force-push; contact GitHub Support for cached/fork refs; audit usage.
+
+**etcd encryption:** base64 ≠ encryption. Enable `EncryptionConfiguration` with a **KMS v2** provider
+(envelope; v1 deprecated v1.28, off by default v1.29+); re-encrypt existing Secrets
+(`kubectl get secrets -A -o json | kubectl replace -f -`); verify `k8s:enc:kms:v2:` prefix.
 
 ---
 
-## 14. Network Security
+## 16. Network Security
 
-- **Segment** with user-defined bridge networks; don't share the default bridge across unrelated apps.
-- **Publish narrowly** — bind to `127.0.0.1` for local-only: `-p 127.0.0.1:8080:8080`.
-- **Daemon socket:** never expose `tcp://0.0.0.0:2375` (unauthenticated = instant host compromise);
-  require **TLS mutual auth** (`--tlsverify`) for remote access.
-- **Kubernetes:** apply a **default-deny** NetworkPolicy per namespace on day one, then allow-list.
-  Remember NetworkPolicies are **additive** — egress from sender *and* ingress to receiver must both
-  allow. CNI matters: **Cilium** (eBPF) adds **FQDN-based egress**, DNS-aware and **L7** (HTTP
-  method/path) policies; **Calico** offers global/namespaced default-deny.
-- **Service mesh mTLS** (Istio/Linkerd) — transparent mutual TLS + identity between services;
-  zero-trust east-west traffic.
-- **Egress control** — default-deny outbound; a compromised container shouldn't beacon/exfiltrate.
+- **Segment** with user-defined bridge networks (isolate by default) over the blunt `--icc=false`.
+  Bind local-only ports to `127.0.0.1`. **Published ports bypass `ufw`** (DNAT in `nat` before
+  `INPUT`) → put custom rules in the **`DOCKER-USER`** chain. Docker **29.0.0** adds an experimental
+  **nftables** backend.
+- **Daemon:** never `2375` plaintext; `2376` with **TLS mutual auth** (`--tlsverify`). Unauth API =
+  host root. Prefer rootless + socket over SSH.
+- **Kubernetes:** apply a **default-deny** NetworkPolicy per namespace day one, then allow-list
+  (additive; both egress-of-sender and ingress-of-receiver must allow; `namespaceSelector`+`podSelector`
+  in one `from` = AND). Vanilla NetworkPolicy can't do L7/FQDN/deny/logging.
+  - **Cilium** (eBPF): FQDN/DNS-aware egress (`toFQDNs`), **L7 HTTP** rules (node-local Envoy),
+    cluster-wide/host policies, Hubble. **Calico** v3.31 (late 2025): eBPF default, nftables GA,
+    `GlobalNetworkPolicy` + `destination.domains`, HostEndpoint for node firewalling.
+  - **In-cluster encryption:** WireGuard (preferred) / IPsec (FIPS). Caveat: traffic to
+    not-yet-discovered endpoints may go unencrypted; same-node pod-to-pod is not encrypted.
+  - **Service-mesh mTLS:** identity via **SPIFFE** SVIDs. **Istio Ambient** (GA; ztunnel L4 + waypoint
+    L7, HBONE) or **Linkerd** (lighter, 24-h cert rotation, 2.19 post-quantum ML-KEM-768).
+  - **Egress control / DNS anti-exfil:** egress gateways (static source IPs for external allow-listing);
+    restrict which domains pods may *resolve* to kill DNS-tunnel C2.
+- **Ingress:** terminate TLS (cert-manager); WAF (ModSecurity CRS / cloud) + rate limit.
+  ⚠️ **`ingress-nginx` reached EOL Mar 24 2026** (no more CVE patches) — **migrate to Gateway API**
+  (`ingress2gateway`) or kgateway/Envoy Gateway. Security-critical.
 
 ---
 
-## 15. Host & Daemon Hardening
+## 17. Host & Daemon Hardening
 
-Audit against **CIS Docker Benchmark v1.8.0** (7 sections, 100+ recs, Docker v28) using
-**docker-bench-security** or the InSpec `dev-sec/cis-docker-benchmark` profile. Kubernetes:
-**CIS Kubernetes Benchmark** + **kube-bench**.
-
-High-value items:
-- Run daemon **rootless** or **userns-remap**; restrict the **`docker` group** (root-equivalent).
-- Use a **minimal / container-specific host OS** (NIST 800-190): Bottlerocket, Flatcar, RHEL CoreOS —
-  read-only rootfs, minimal packages, auto-updates.
+Audit against **CIS Docker Benchmark v1.8.0** (7 sections, 100+ recs) with **docker-bench-security**
+or InSpec `dev-sec/cis-docker-benchmark`; K8s → **CIS Kubernetes Benchmark** + **kube-bench**.
+- Run daemon **rootless/userns-remap**; restrict the root-equivalent **`docker` group**.
+- **Minimal/container-specific host OS** (NIST 800-190): Bottlerocket, Flatcar, RHEL CoreOS.
 - Harden `/etc/docker/daemon.json`:
   ```json
-  {
-    "icc": false,
-    "userns-remap": "default",
-    "no-new-privileges": true,
-    "live-restore": true,
-    "userland-proxy": false,
-    "log-driver": "json-file",
-    "log-opts": { "max-size": "10m", "max-file": "3" }
-  }
+  { "icc": false, "userns-remap": "default", "no-new-privileges": true, "live-restore": true,
+    "userland-proxy": false, "log-driver": "json-file", "log-opts": {"max-size":"10m","max-file":"3"} }
   ```
-- **Audit** the daemon/files with `auditd` (CIS §1): `/usr/bin/dockerd`, `/etc/docker`,
-  `/var/lib/docker`. Correct socket/cert perms (CIS §3).
-- **Patch runc/BuildKit/Docker** promptly — container-escape CVEs live here (§21).
-```bash
-docker run --rm --net host --pid host --userns host --cap-add audit_control \
-  -v /var/lib:/var/lib:ro -v /var/run/docker.sock:/var/run/docker.sock:ro \
-  -v /etc:/etc:ro docker/docker-bench-security
-```
+- **auditd** on `/usr/bin/dockerd`, `/etc/docker`, `/var/lib/docker` (CIS §1); correct socket/cert
+  perms (§3). **Patch runc/BuildKit/Docker** promptly — escape CVEs live here (§26).
 
 ---
 
 # Part IV — OBSERVE
 
-## 16. Runtime Threat Detection
-
-Prevention leaks — you need eyes at runtime. The three eBPF-based OSS leaders:
+## 18. Runtime Threat Detection
 
 | Tool | Origin | Model | Distinctive |
 |:--|:--|:--|:--|
-| **Falco** | CNCF (graduated) | Detect & alert | 70+ Falcosidekick integrations; the detection standard |
-| **Tetragon** | Cilium/Isovalent | Detect **+ enforce** | In-kernel enforcement via **LSM/eBPF** — can kill a process / block a syscall *before* it completes |
-| **Tracee** | Aqua | Detect **+ forensics** | Deep event capture for investigation |
+| **Falco** | CNCF (graduated) | **detect/alert** | 70+ Falcosidekick integrations; the detection standard; *does not block* |
+| **Tetragon** | Cilium (1.0 GA) | **detect + enforce** | In-kernel enforcement via eBPF/**LSM hooks** — kill/block *before* completion |
+| **Tracee** | Aqua | **detect + forensics** | Deep event capture |
 
-They detect: shells spawned in containers, unexpected egress, writes to sensitive paths, privilege
-escalation, cryptominers, container-escape behavior. **Pick Falco** for mature detection/alerting;
-**Tetragon** when you need in-kernel *prevention* or already run Cilium; **Tracee** for
-detection + forensic depth. Defense-in-depth trio: **Trivy** (scan) + **Kyverno/OPA** (admission) +
-**Falco/Tetragon** (runtime).
-
----
-
-## 17. Logging & Drift Detection
-
-- **Centralize** logs to a SIEM (fluentd/fluent-bit → Elastic/Loki/Splunk); avoid logging secrets/PII.
-- **Rotate** logs (`max-size`/`max-file`) to prevent disk-fill DoS.
-- **Image drift detection** — alert when a running container's filesystem diverges from its image
-  (sign of live tampering / injected payloads). `docker diff <ctr>` shows changed files.
+Falco rules = rules/macros/lists (YAML); custom rules in `/etc/falco/rules.d/` with `override`
+(append/replace); plugins for `k8saudit`, `cloudtrail`, etc. Detect: shell-in-container, unexpected
+egress, sensitive-file writes, privilege escalation, cryptominers, container-escape behavior.
+Defense-in-depth trio: **Trivy** (scan) + **Kyverno/OPA** (admission) + **Falco/Tetragon** (runtime).
 
 ---
 
-## 18. Incident Response & Forensics
+## 19. Runtime Enforcement & Drift Prevention
 
-- **Preserve evidence before killing:** `docker inspect`, `docker diff`, `docker logs`; capture the
-  filesystem (`docker export`) and, for memory, **CRIU checkpoint** (`docker checkpoint create`) to
-  snapshot a running container's full state for offline memory forensics.
-- **Debug without shipping tools:** ephemeral debug containers (`kubectl debug`) attach a toolbox to a
-  distroless pod without rebuilding it.
-- **Immutable infrastructure:** *redeploy, don't patch* a compromised container — kill & quarantine
-  (cordon the node / NetworkPolicy isolate), then rebuild from a clean, signed image.
-- **Post-incident:** scan the offending image/layers with TruffleHog/gitleaks for leaked creds; rotate
-  anything exposed; feed findings back into admission policy.
+Falco is detection-only → route response downstream or enforce in-kernel:
+- **Falco → Falcosidekick → Falco Talon** (response engine, reacts in ms): actionners
+  `kubernetes:terminate`, `:networkpolicy` (quarantine isolate), `:label`, `:exec`,
+  `:tcpdump`/`:sysdig` (forensics to S3). ⚠️ Talon is **pre-1.0** (v0.3.0) — validate before standardizing.
+- **Tetragon enforcement** (`TracingPolicy` `matchActions`): **`Sigkill`** (kill process) + **`Override`**
+  (`argError` — syscall never executes). **Combine both** — a `SIGKILL` alone doesn't guarantee the
+  op didn't commit; `Override` needs `CONFIG_BPF_KPROBE_OVERRIDE`. Enforcement survives daemon restart
+  (in-kernel). LSM hooks avoid the kprobe TOCTOU race.
+- **KubeArmor** (CNCF sandbox): LSM inline policy (AppArmor/BPF-LSM/SELinux) — allow/audit/block
+  process/file/network/caps; `defaultPosture` Audit by default, flip to **block** for zero-trust
+  whitelist mode. Prefer BPF-LSM (kernel ≥5.7) over AppArmor backend.
+- **Auto profile generation:** Inspektor Gadget / oci-seccomp-bpf-hook / **Security Profiles Operator**
+  (record with `SCMP_ACT_LOG` → review → enforce `SCMP_ACT_ERRNO` → attach via `securityContext`).
+
+**Drift prevention:** `readOnlyRootFilesystem: true` (enforce fleet-wide via Kyverno/PSA);
+**distroless can't spawn a shell** (structurally blocks exec-based post-exploitation); Falco
+container-drift rule (new executable in a running container). Escalation ladder: **Audit → Block
+(KubeArmor) → in-kernel Override (Tetragon)**; feed findings back to admission-policy tightening.
 
 ---
 
-# Part V — GOVERNANCE
+## 20. Incident Response & Forensics
 
-## 19. Compliance & Standards
+- **Preserve before killing:** `docker inspect` / `docker diff` / `docker logs`; `docker export`
+  (filesystem); **CRIU checkpoint** (`docker checkpoint create`) to snapshot running state for memory
+  forensics.
+- **Debug distroless without shipping tools:** ephemeral debug containers (`kubectl debug`).
+- **Immutable infra:** *redeploy, don't patch* — kill & quarantine (cordon node / NetworkPolicy
+  isolate; Talon can automate), then rebuild from a clean, signed image.
+- **Post-incident:** scan offending image/layers with TruffleHog/gitleaks; rotate exposed creds; feed
+  back into admission policy. Ship logs to a SIEM (fluentd/fluent-bit); rotate to prevent disk-fill DoS.
 
-### NIST SP 800-190 — the five container risk areas (+ countermeasures)
-| Area | Key risks | Countermeasures |
+---
+
+# Part V — ORCHESTRATE
+
+## 21. Docker Compose & Swarm Security
+
+Hardened Compose service:
+```yaml
+services:
+  web:
+    image: nginx@sha256:<digest>
+    user: "10001:10001"
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: ["no-new-privileges:true", "seccomp=/etc/docker/seccomp-nginx.json"]
+    pids_limit: 100
+    ulimits: { nofile: {soft: 1024, hard: 2048} }
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=64m"]
+    mem_limit: 256m
+    cpus: 0.5
+    healthcheck: { test: ["CMD","curl","-f","http://localhost/healthz"], interval: 30s, retries: 3 }
+    secrets: [db_password]
+secrets:
+  db_password: { file: ./db_password.txt }
+```
+- ⚠️ Gotcha: modern Compose v2 honors `deploy.resources.limits`, but `deploy.restart_policy`/
+  `placement`/`replicas` are **Swarm-only** (ignored by `compose up`). Use top-level
+  `mem_limit`/`cpus`/`pids_limit` for non-Swarm certainty.
+- Compose secrets mount as **files at `/run/secrets/<name>`**, per-service; **plain Compose does NOT
+  encrypt at rest** (just bind-mounts) — real encryption needs Swarm or Vault. `configs:` = same but
+  no tmpfs (non-sensitive only). Env vars leak (visible to all procs, logs, `docker inspect`).
+- **Swarm:** `docker secret` → sent to manager over **mTLS**, stored in the **encrypted Raft log**,
+  mounted on tmpfs, never env. mTLS between nodes (node certs rotate 90 d default; tighten with
+  `--cert-expiry`). Rotate join tokens (`docker swarm join-token --rotate`); managers are crown jewels
+  (odd number 3/5, no untrusted workloads). **`--autolock`** encrypts the Raft KEK at rest (manual
+  `docker swarm unlock` per restart). Overlay data-plane is **not encrypted by default** →
+  `--opt encrypted` (IPsec, ~12-h key rotation, CPU cost).
+- ⚠️ **CVE-2025-62725**: path traversal in Compose `include` with OCI artifacts → upgrade Compose
+  ≥ v2.40.2. Engine **v29** has breaking changes (min API 1.44; broke some Swarm DNS/legacy volume
+  plugins) — pin/validate before upgrading a prod Swarm.
+- **Swarm status:** Mirantis supports it through ~2030; little innovation since 2022 ("deprecated in
+  spirit"). Keep existing Swarm; build new on **Kubernetes**.
+
+---
+
+## 22. Kubernetes Workload Security
+
+**Restricted-compliant `securityContext`:**
+```yaml
+spec:
+  automountServiceAccountToken: false
+  securityContext:                 # pod-level
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 3000
+    fsGroup: 2000
+    fsGroupChangePolicy: OnRootMismatch
+    supplementalGroupsPolicy: Strict     # GA v1.35
+    seccompProfile: { type: RuntimeDefault }
+  containers:
+    - name: app
+      securityContext:             # container-level
+        allowPrivilegeEscalation: false   # sets no_new_privs; forced true if privileged/CAP_SYS_ADMIN
+        privileged: false
+        readOnlyRootFilesystem: true      # best practice (beyond PSS)
+        capabilities: { drop: ["ALL"] }   # add back only NET_BIND_SERVICE under Restricted
+        seccompProfile: { type: RuntimeDefault }
+      volumeMounts: [{ name: tmp, mountPath: /tmp }]
+  volumes: [{ name: tmp, emptyDir: {} }]
+```
+- **Pod Security Standards:** Privileged ⊂ Baseline ⊂ Restricted. **Pod Security Admission** (GA v1.25,
+  replaced PodSecurityPolicy removed v1.25) via namespace labels
+  `pod-security.kubernetes.io/{enforce|audit|warn}: {…}` — **pin `-version`** so upgrades don't tighten
+  silently; roll out warn/audit → enforce.
+- **Version state:** seccomp `SeccompDefault` GA v1.27; AppArmor `appArmorProfile` field GA v1.30; user
+  namespaces (`hostUsers: false`) beta/on-by-default v1.33 (verify GA per cluster);
+  `supplementalGroupsPolicy` GA v1.35.
+- **ServiceAccount tokens:** `automountServiceAccountToken: false`; bound/projected tokens (default
+  v1.22, audience-scoped, auto-rotated, pod-bound); legacy long-lived secret tokens off since v1.24.
+- **RBAC least-privilege:** namespaced Role+RoleBinding to a dedicated SA (never `default`); no
+  wildcards; withhold danger verbs (`escalate`, `bind`, `impersonate`, `pods/exec`,
+  `secrets get/list`, `nodes/proxy`); never `cluster-admin` to workloads.
+
+---
+
+# Part VI — GOVERN
+
+## 23. Compliance & Standards
+
+**NIST SP 800-190 — five risk areas + countermeasures:**
+| Area | Risks | Countermeasures |
 |:--|:--|:--|
-| **Image** | Vulnerabilities, config defects, embedded malware, **clear-text secrets**, untrusted images | Scan + sign; secrets out of images; trusted base images |
-| **Registry** | Insecure connections, stale images, weak authN/authZ | TLS, RBAC, prune stale tags, signed content-trust |
-| **Orchestrator** | Unbounded admin access, poor network separation, mixed workload sensitivity, node trust | RBAC least-privilege, network segmentation, sensitivity-based scheduling |
-| **Container** | Runtime vulns, unbounded privilege, escape | cap-drop, seccomp/MAC, read-only, resource limits |
-| **Host OS** | Large attack surface, shared kernel | **Container-specific minimal OS**, patching, host hardening |
-800-190 maps to **NIST 800-53**, **FedRAMP**, and **DoD cATO**.
+| **Image** | vulns, config defects, embedded malware, **clear-text secrets**, untrusted images | scan+sign, secrets out of images, trusted bases |
+| **Registry** | insecure connections, stale images, weak authN/Z | TLS, RBAC, prune, signed content-trust |
+| **Orchestrator** | unbounded admin, poor net separation, mixed sensitivity, node trust | RBAC, segmentation, sensitivity-based scheduling |
+| **Container** | runtime vulns, unbounded privilege, escape | cap-drop, seccomp/MAC, read-only, limits |
+| **Host OS** | large surface, shared kernel | minimal container-specific OS, patching |
+Maps to NIST 800-53, FedRAMP, DoD cATO.
 
-### Other regimes you must name correctly
-- **CIS Docker/Kubernetes Benchmarks** — prescriptive config baselines (§15). Automated: docker-bench,
-  kube-bench, InSpec.
-- **DISA STIG / Container Platform SRG** — DoD hardening; images via DoD Cyber Exchange /
-  Iron Bank. Evidence via OpenSCAP/OSCAP scans + STIG checklists.
-- **PCI-DSS 4.0.1** — the only active version since **Mar 31 2024**; future-dated 4.0 reqs became
-  **mandatory Mar 31 2025**. Containers: segment CDE from non-CDE (NetworkPolicy/namespaces), scan
-  images pre-deploy, no `privileged`, least-privilege RBAC + security contexts, read-only rootfs,
-  logging.
-- **FIPS 140-3** — validated crypto for regulated industries. Use FIPS base images (RHEL UBI FIPS,
-  **Chainguard FIPS** — OpenSSL FIPS provider CMVP #4282, Bouncy Castle FIPS; 700+ variants, STIG-
-  hardened, OSCAP reports). FIPS validation ≠ STIG-hardened ≠ CVE-free — they're distinct claims.
-- **SOC 2 / ISO 27001** — pipeline controls, change management, evidence retention.
-- **Frameworks:** OpenSSF **Scorecard**, **S2C2F**, CNCF Software Supply Chain Best Practices.
+**Other regimes:** **CIS Docker/K8s Benchmarks** (§17). **DISA STIG / Container Platform SRG** (DoD;
+Iron Bank images; OSCAP evidence). **PCI-DSS 4.0.1** — only active version since Mar 31 2024,
+future-dated 4.0 reqs mandatory **Mar 31 2025**: segment CDE (NetworkPolicy/namespaces), scan
+pre-deploy, no `privileged`, least-privilege RBAC + security contexts, read-only rootfs, logging.
+**FIPS 140-3** — validated crypto (RHEL UBI FIPS, **Chainguard FIPS** — OpenSSL FIPS provider
+CMVP #4282; note FIPS-validated ≠ STIG-hardened ≠ CVE-free). **SOC 2 / ISO 27001** — pipeline
+controls + evidence. **OpenSSF Scorecard / S2C2F**. **OWASP Docker Top 10** (D01–D10) & **Docker
+Security Cheat Sheet** (Rules 0–13) as design/ops checklists. **NSA/CISA Kubernetes Hardening Guide
+v1.2** (2022, still current).
 
-### Governance mechanics
-Policy-as-code (§9) is how compliance is *enforced continuously*, not audited annually. Collect
-evidence: signed provenance, SBOMs, scan reports, admission-policy logs, benchmark results.
+Governance mechanics: policy-as-code enforces compliance **continuously**; collect evidence (signed
+provenance, SBOMs, scan reports, admission logs, benchmark results).
 
 ---
 
-## 20. CI/CD DevSecOps Pipeline
+## 24. CI/CD Hardening & SLSA L3
 
-End-to-end hardened flow:
-```
-1. Lint            hadolint (Dockerfile), conftest (policy)
-2. Build           BuildKit multi-stage, docker-container driver,
-                   --provenance=mode=max --sbom=true, secrets via --mount, no AR%G secrets
-3. Scan            trivy/scout — fail on fixable HIGH/CRITICAL (VEX-filtered)
-4. SBOM            syft → SPDX/CycloneDX, attach as attestation
-5. Sign            cosign (keyless OIDC) or notation (PKI)
-6. Push            immutable tag + digest → trusted registry (Harbor/ECR/GAR/ACR)
-7. Verify          admission: cosign verify + Kyverno/Gatekeeper/VAP
-                   (no root, no latest, signed-only, limits, drop caps)
-8. Run             non-root, cap-drop, seccomp, read-only; sandboxed runtime if untrusted;
-                   Falco/Tetragon watching
-9. Continuously    re-scan registry images; Renovate base bumps → rebuild on new CVEs
-```
-**Senior differentiators:** central **golden images** rebuilt on cadence; **ephemeral, isolated build
-runners** (a poisoned build shouldn't reach shared infra); native multi-arch build farms; SLSA L3
-provenance; continuous compliance scanning.
+**Threat model — OWASP CICD-SEC Top 10:** **Poisoned Pipeline Execution** (D-PPE edits CI config;
+I-PPE poisons referenced build scripts; 3PE = fork-PR code in shared CI), dependency confusion, cache
+poisoning, compromised actions/runners. A build node inherits every secret it can reach. Real 2025
+incidents: **`tj-actions/changed-files`** compromise, **Shai-Hulud** npm worm, GhostAction.
+
+**GitHub Actions hardening:** **pin actions by full commit SHA** (org policy can enforce since
+Aug 15 2025); least-privilege `permissions: {}` default + per-job grants; **OIDC to cloud** (no
+long-lived secrets, lock trust-policy `sub`); avoid `pull_request_target` with untrusted checkout;
+pass `github.event.*` via `env:` (anti script-injection); Environment protection rules for approvals;
+pin reusable workflows by SHA. Native **`actions/attest-build-provenance`** = keyless SLSA provenance
+→ **L3** when signing runs in GitHub's isolated control plane.
+
+**SLSA Build L3 requires:** signed **non-forgeable** provenance + **isolated ephemeral** build env
+where **the signing key is unreachable by build steps** + no cross-build cache poisoning. Achieve via
+**`slsa-github-generator`** (⚠️ pinned by `@vX.Y.Z` tag, not SHA — intentional exception),
+**Tekton Chains** (out-of-band signing), **Google Cloud Build** (platform-generated provenance).
+GitLab SLSA L2 is GA; **L3 is Experiment-only** (18.3, flag off) — not production-ready.
+
+**Verify:** `slsa-verifier verify-image` / `cosign verify-attestation` in-pipeline **and** Kyverno/
+policy-controller at admission. **Ephemeral single-use runners** (JIT/ARC) are required for L3
+isolation — standard self-hosted runners are not guaranteed clean.
+
+**Source-side:** branch protection, signed commits, 2-person review, lockfiles + hash-pinned deps,
+and a **private proxy/pull-through cache** (Artifactory/Nexus/CodeArtifact) + reserved org scope to
+defeat dependency confusion.
 
 ---
 
-## 21. Incident Case Studies
+## 25. Cloud Provider Container Security
+
+| | **AWS** | **GCP** | **Azure** |
+|:--|:--|:--|:--|
+| Registry scan | ECR basic (OS) vs **Enhanced/Inspector** (OS+lang, continuous) | Artifact Analysis (on-push + continuous) | Defender for Containers (agentless MDVM, daily, multicloud incl. ECR/GAR) |
+| Deploy gating | **Kyverno/Ratify** (EKS) or Lambda hook (ECS) — *no native gate* | **Binary Authorization** (native; attestation/Sigstore/SLSA/freshness; **CV every ≥24 h**, GKE) | `defender-admission-controller` (vuln gating) + **Azure Policy/Gatekeeper** |
+| Workload identity | **IRSA** / **EKS Pod Identity** (no OIDC-provider limit, cross-cluster reuse) | **GKE Workload Identity** | **Entra Workload ID** (federated) |
+| Signing | **AWS Signer + Notation**; **ECR managed signing** GA Nov 2025 (auto-sign on push) | Cosign/attestations + Binary Authorization | Notation (DCT deprecated) |
+| Runtime | **GuardDuty Runtime Monitoring** (eBPF agent; Fargate sidecar) | GKE Sandbox (gVisor), Autopilot PSS-Baseline default | **Defender sensor** (eBPF, MITRE ATT&CK, drift block) |
+| Hardening | Fargate: no `privileged`, read-only rootfs, distinct task vs execution roles | Autopilot: Shielded Nodes + Workload Identity + PSS-Baseline by default | Azure Policy built-in PSS initiatives |
+
+All three: private endpoints (VPC/Private Link/VPC-SC), immutable tags, least-privilege pull, OIDC
+federation from CI. Only **GCP Binary Authorization** is a first-class native admission gate;
+AWS/Azure lean on Kyverno/Gatekeeper.
+
+---
+
+## 26. Incident Case Studies
 
 ### Leaky Vessels (Jan 2024) — container escape
-| CVE | Component | Impact |
-|:--|:--|:--|
-| **CVE-2024-21626** | runc | FD leak → escape to host filesystem |
-| **CVE-2024-23651** | BuildKit | Race condition → breakout during build |
-| **CVE-2024-23652** | BuildKit | Arbitrary host file deletion during build |
-| **CVE-2024-23653** | BuildKit | Breakout during image build |
-Fix: **runc ≥ 1.1.12**, **BuildKit ≥ 0.12.5**. Lesson: the escape lived in the *core runtime*, not
-your app — hence patch runc/BuildKit, don't rely on the container as your only boundary, and run
-runtime detection.
+| CVE | Component | Impact | Fix |
+|:--|:--|:--|:--|
+| **CVE-2024-21626** | runc ≤1.1.11 | FD leak / `process.cwd` → host access (CVSS 8.6) | **runc 1.1.12** |
+| CVE-2024-23651/52/53 | BuildKit ≤0.12.4 | build-time breakout / host file deletion | **BuildKit 0.12.5** |
+Aggregate: **Moby/Engine v25.0.2**, Docker Desktop 4.27.1.
 
-### xz-utils backdoor (CVE-2024-3094, Mar 2024) — supply chain
-A multi-year social-engineering campaign planted a backdoor in the `xz`/`liblzma` upstream tarball
-(differing from the git source). Lesson: **reproducible builds + SBOM + provenance** would surface a
-tarball that doesn't match source; pin and verify dependencies.
+### Nov 2025 runc trio (disclosed Nov 5 2025) — newest escape class
+| CVE | Mechanism |
+|:--|:--|
+| **CVE-2025-31133** | `/dev/null`→symlink → runc bind-mounts attacker target RW → `/proc` write escape |
+| **CVE-2025-52565** | `/dev/pts/$n`→`/dev/console` mount **before** maskedPaths applied |
+| **CVE-2025-52881** | redirect `/proc` writes, bypass LSM relabel |
+Fixed in **runc 1.2.8 / 1.3.3 / 1.4.0-rc.3**. **runc 1.1.x is EOL/unpatched — upgrade.** Same
+mount-race/procfs-write family as Leaky Vessels; rootless + userns + no-new-privileges + read-only
+rootfs + mandatory seccomp/AppArmor materially reduce impact.
 
-### GhostAction (early 2025) — CI compromise
-Attackers compromised a widely-used GitHub Action to exfiltrate secrets. Lesson: pin Actions by
-commit SHA, least-privilege `GITHUB_TOKEN`, OIDC over long-lived secrets, isolate build runners.
-
----
-
-## 22. Audit Checklist
-
-**Build**
-- [ ] Minimal/distroless/Chainguard/DHI base, pinned by digest (no `latest`); auto-bumped (Renovate)
-- [ ] Multi-stage; no build tools/secrets in final image; `.dockerignore` excludes `.git`/`.env`/keys
-- [ ] BuildKit secret mounts for build-time creds; `mode=max` provenance only if no ARG secrets
-- [ ] SBOM generated; image scanned; CI gated on fixable HIGH/CRITICAL (VEX-filtered)
-
-**Ship**
-- [ ] Signed (Cosign keyless or Notation) + SLSA provenance attached
-- [ ] Immutable tags; trusted registry with RBAC + expiring robot accounts; deploy by digest
-
-**Run**
-- [ ] Non-root `USER`; `--cap-drop=ALL` (+ minimal); `no-new-privileges`; read-only rootfs + tmpfs
-- [ ] seccomp + AppArmor/SELinux; resource + PID limits; **no** `--privileged`, **no** socket mount
-- [ ] Rootless / userns-remap daemon; sandboxed runtime (gVisor/Kata) for untrusted workloads
-- [ ] Secrets from Vault/CSI/ESO/SOPS — never in image/env
-- [ ] Default-deny NetworkPolicy; mesh mTLS; daemon not exposed unauthenticated
-
-**Observe / Govern**
-- [ ] Falco/Tetragon runtime detection; centralized logging + rotation; drift detection
-- [ ] Admission control (signed-only, no-root, limits) via Kyverno/Gatekeeper/VAP
-- [ ] runc/BuildKit/Docker patched; host on minimal OS; docker-bench + kube-bench passing
-- [ ] Compliance evidence collected (provenance, SBOM, scans, policy logs)
+### Supply-chain: **xz-utils (CVE-2024-3094, Mar 2024)** — multi-year backdoor in `liblzma` (tarball ≠
+git source) → reproducible builds + SBOM + provenance would surface it. **GhostAction / tj-actions
+(2025)** — compromised GitHub Action exfiltrating secrets → pin by SHA, least-priv token, OIDC.
+**Shai-Hulud (2025)** — self-propagating npm worm → lockfiles, private proxy, scoped packages.
 
 ---
 
-## 23. Interview Q&A
+## 27. Audit Checklist
+
+**Build** — minimal/distroless/Chainguard/DHI base pinned by digest, auto-bumped · multi-stage, no
+build tools/secrets in final image · `.dockerignore` · BuildKit secret mounts · SBOM + scan gated on
+fixable HIGH/CRITICAL (VEX-filtered).
+**Ship** — signed (Cosign/Notation) + SLSA provenance · immutable tags + digest deploy · trusted
+registry with RBAC + expiring robot accounts · two-scanner reconcile + continuous registry rescan.
+**Run** — non-root `USER` · `--cap-drop=ALL` (+minimal) · `no-new-privileges` · read-only rootfs +
+tmpfs · seccomp + AppArmor/SELinux · resource+PID limits · **no** `--privileged`/socket mount ·
+rootless/userns · sandboxed runtime for untrusted · secrets from Vault/CSI/ESO/SOPS · default-deny
+NetworkPolicy + mesh mTLS · daemon not exposed unauthenticated.
+**Observe/Govern** — Falco/Tetragon + Talon/KubeArmor enforcement · centralized logging + rotation +
+drift detection · admission (signed-only, no-root, limits) via Kyverno/Gatekeeper/VAP ·
+runc/BuildKit/Docker patched (≥ Nov-2025 fixes) · host on minimal OS · docker-bench + kube-bench ·
+compliance evidence collected.
+
+---
+
+## 28. Interview Q&A
 
 - **Why isn't a container a security boundary?** Shares the host kernel; isolation is
-  namespaces/cgroups/caps/seccomp, not virtualization. A kernel/runc bug (Leaky Vessels) breaks out →
-  defense-in-depth; use gVisor/Kata for untrusted code.
+  namespaces/cgroups/caps/seccomp/LSM. A kernel/runc bug (Leaky Vessels, Nov-2025 trio) breaks out →
+  defense-in-depth; gVisor/Kata for untrusted code.
 - **Secrets out of an image?** BuildKit `--mount=type=secret` at build; Vault/CSI/ESO at runtime.
-  Never `ENV`/`ARG` — persist in layers, `docker history`, and `mode=max` provenance.
-- **`--cap-drop=ALL` then what?** Add back only what's needed (e.g. `NET_BIND_SERVICE`). Never
+  Never `ENV`/`ARG` (persist in layers, `docker history`, `mode=max` provenance).
+- **`--cap-drop=ALL` then what?** Add back only what's needed (`NET_BIND_SERVICE`); never
   `CAP_SYS_ADMIN`/`SYS_MODULE`/`SYS_PTRACE`.
-- **Rootless vs userns-remap?** Rootless = the *daemon* runs unprivileged (strongest, slirp4netns/pasta
-  + cgroup-delegation trade-offs); userns-remap = daemon stays root, container UID 0 maps to
+- **Rootless vs userns-remap?** Rootless = the *daemon* runs unprivileged (strongest;
+  slirp4netns/pasta + cgroup-delegation trade-offs); userns-remap = daemon root, container UID 0 →
   unprivileged host UID.
+- **SLSA levels?** L1 provenance exists (forgeable); L2 hosted+signed; L3 isolated builds + keys
+  unreachable by build steps.
 - **How do you trust an image in prod?** SBOM + SLSA provenance + Cosign signature verified at
   admission (Kyverno/policy-controller); deploy by digest; SLSA L3 build.
-- **SLSA levels?** L1 provenance exists (forgeable); L2 hosted + signed; L3 isolated builds, keys
-  unreachable by build steps.
-- **Distroless vs Alpine vs Chainguard?** Distroless: no shell/pkg-mgr (small surface, harder debug).
-  Alpine: tiny but has shell + musl quirks. Chainguard/Wolfi: near-zero-CVE, daily rebuilds, SBOM +
-  FIPS variants.
-- **Cosign vs Notation?** Cosign keyless (OIDC/Fulcio/Rekor, dev-friendly); Notation X.509/PKI,
-  multi-signature approval. DCT is retired (2025).
-- **Falco vs Tetragon?** Falco detects/alerts (CNCF standard); Tetragon can *enforce* in-kernel
-  (kill/block) via eBPF/LSM.
+- **Cosign vs Notation?** Cosign keyless (OIDC/Fulcio/Rekor); Notation X.509/PKI, multi-signature.
+  DCT retired 2025.
+- **Falco vs Tetragon?** Falco detects/alerts; Tetragon enforces in-kernel (Sigkill+Override) via
+  eBPF/LSM.
+- **How do you prioritize CVEs now that NVD is gutted?** Multi-feed (OSV/GHSA/distro), KEV first, EPSS,
+  reachability/exposure, BOD-26-04 risk variables — not raw CVSS.
+- **Distroless vs Alpine vs Chainguard?** Distroless: no shell/pkg-mgr. Alpine: tiny, musl quirks.
+  Chainguard/Wolfi: near-zero-CVE, daily rebuilds, SBOM + FIPS.
 - **NIST 800-190 areas?** Image, registry, orchestrator, container, host OS.
 
 ---
 
-## References & Standards
+## References
 
-**Frameworks & benchmarks**
-- CIS Docker Benchmark — https://www.cisecurity.org/benchmark/docker · v1.8.0 (Aug 2025): https://www.cisecurity.org/insights/blog/cis-benchmarks-august-2025-update
-- NIST SP 800-190 — https://csrc.nist.gov/pubs/sp/800/190/final
-- OWASP Docker Top 10 — https://owasp.org/www-project-docker-top-10/ · Cheat Sheet — https://cheatsheetseries.owasp.org/cheatsheets/Docker_Security_Cheat_Sheet.html
-- SLSA v1.0 levels — https://slsa.dev/spec/v1.0/levels
-- PCI-DSS 4.0.1 — https://www.pcisecuritystandards.org/ · DISA STIGs — https://public.cyber.mil/stigs/
-- FIPS 140-3 — https://www.chainguard.dev/supply-chain-security-101/fips-140-3-everything-you-need-to-know
+**Standards:** CIS Docker Benchmark https://www.cisecurity.org/benchmark/docker · NIST SP 800-190
+https://csrc.nist.gov/pubs/sp/800/190/final · OWASP Docker Top 10 https://owasp.org/www-project-docker-top-10/
+· OWASP Docker Cheat Sheet https://cheatsheetseries.owasp.org/cheatsheets/Docker_Security_Cheat_Sheet.html
+· SLSA https://slsa.dev/spec/v1.0/levels · NSA/CISA K8s Hardening https://media.defense.gov/2022/Aug/29/2003066362/-1/-1/0/CTR_KUBERNETES_HARDENING_GUIDANCE_1.2_20220829.PDF
+· PCI-DSS https://www.pcisecuritystandards.org/ · DISA STIGs https://public.cyber.mil/stigs/ · KSPP https://kspp.github.io/Recommended_Settings.html
 
-**Build & supply chain**
-- BuildKit / Dockerfile reference — https://docs.docker.com/reference/dockerfile/ · Build secrets — https://docs.docker.com/build/building/secrets/ · Attestations — https://docs.docker.com/build/metadata/attestations/
-- Docker Hardened Images — https://www.docker.com/blog/hardened-images-free-now-what/ · Chainguard — https://edu.chainguard.dev/
-- Sigstore/Cosign — https://docs.sigstore.dev/ · Notation — https://notaryproject.dev/ · DCT retirement — https://www.docker.com/blog/retiring-docker-content-trust/
-- Syft/SBOM — https://github.com/anchore/syft · Docker Scout — https://docs.docker.com/scout/ · Trivy — https://trivy.dev/
+**Supply chain:** Sigstore https://docs.sigstore.dev/ · Notation https://notaryproject.dev/ · in-toto
+https://github.com/in-toto/attestation · CycloneDX https://cyclonedx.org/ · SPDX https://spdx.dev/ ·
+GUAC https://guac.sh/ · Dependency-Track https://dependencytrack.org/ · OpenVEX https://github.com/openvex/spec
+· EPSS https://www.first.org/epss/ · CISA KEV https://www.cisa.gov/known-exploited-vulnerabilities-catalog
+· BOD 26-04 https://www.cisa.gov/news-events/directives/bod-26-04-prioritizing-security-updates-based-risk
 
-**Runtime & platform**
-- Docker seccomp — https://docs.docker.com/engine/security/seccomp/ · Rootless — https://docs.docker.com/engine/security/rootless/ · capabilities(7) — https://man7.org/linux/man-pages/man7/capabilities.7.html
-- gVisor — https://gvisor.dev/ · Kata — https://katacontainers.io/ · Firecracker — https://firecracker-microvm.github.io/ · Sysbox — https://github.com/nestybox/sysbox
-- Harbor — https://goharbor.io/ · Kyverno — https://kyverno.io/ · OPA Gatekeeper — https://open-policy-agent.github.io/gatekeeper/ · ValidatingAdmissionPolicy — https://kubernetes.io/docs/reference/access-authn-authz/validating-admission-policy/
+**Build/runtime:** BuildKit https://docs.docker.com/build/ · Docker seccomp https://docs.docker.com/engine/security/seccomp/
+· Rootless https://docs.docker.com/engine/security/rootless/ · capabilities(7) https://man7.org/linux/man-pages/man7/capabilities.7.html
+· gVisor https://gvisor.dev/ · Kata https://katacontainers.io/ · Firecracker https://firecracker-microvm.github.io/
+· Copacetic https://github.com/project-copacetic/copacetic · kernel-hardening-checker https://github.com/a13xp0p0v/kernel-hardening-checker
 
-**Detection, secrets, network, IR**
-- Falco — https://falco.org/ · Tetragon — https://tetragon.io/ · Tracee — https://aquasecurity.github.io/tracee/
-- Vault on K8s — https://developer.hashicorp.com/vault/docs/platform/k8s · External Secrets Operator — https://external-secrets.io/ · SOPS — https://github.com/getsops/sops · SPIFFE/SPIRE — https://spiffe.io/
-- Cilium — https://cilium.io/ · Calico — https://docs.tigera.io/ · TruffleHog — https://github.com/trufflesecurity/trufflehog · gitleaks — https://github.com/gitleaks/gitleaks
-- Leaky Vessels — https://www.wiz.io/blog/leaky-vessels-container-escape-vulnerabilities · xz-utils CVE-2024-3094 — https://www.cisa.gov/news-events/alerts/2024/03/29/reported-supply-chain-compromise-affecting-xz-utils-data-compression-library-cve-2024-3094
+**Platform/detection:** Harbor https://goharbor.io/ · Kyverno https://kyverno.io/ · OPA Gatekeeper https://open-policy-agent.github.io/gatekeeper/
+· Falco https://falco.org/ · Tetragon https://tetragon.io/ · KubeArmor https://kubearmor.io/ · Cilium https://cilium.io/
+· Calico https://docs.tigera.io/ · Vault K8s https://developer.hashicorp.com/vault/docs/platform/k8s ·
+External Secrets https://external-secrets.io/ · SPIFFE/SPIRE https://spiffe.io/ · slsa-github-generator https://github.com/slsa-framework/slsa-github-generator
+· TruffleHog https://github.com/trufflesecurity/trufflehog · gitleaks https://github.com/gitleaks/gitleaks
+
+**Incidents:** Leaky Vessels https://www.wiz.io/blog/leaky-vessels-container-escape-vulnerabilities ·
+Nov-2025 runc trio https://www.cncf.io/blog/2025/11/28/runc-container-breakout-vulnerabilities-a-technical-overview/
+· xz-utils CVE-2024-3094 https://www.cisa.gov/news-events/alerts/2024/03/29/reported-supply-chain-compromise-affecting-xz-utils-data-compression-library-cve-2024-3094
 
 ---
 
 *Derived and expanded from the [Docker Professional Cheatsheet](./README.md). Living documentation —
-revisit when CIS/NIST/OWASP/SLSA publish updates or when new container-escape CVEs land.*
+revisit when CIS/NIST/OWASP/SLSA update, when regulatory deadlines (EU CRA, PCI, CISA) shift, or when
+new container-escape CVEs land.*
