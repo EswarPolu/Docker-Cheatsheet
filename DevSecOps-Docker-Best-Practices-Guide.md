@@ -8,10 +8,13 @@
 > (Aug 2025, Docker v28), NIST **SP 800-190**, OWASP **Docker Top 10**, SLSA **v1.0/1.1**,
 > PCI-DSS **4.0.1**, CISA **BOD 26-04**.
 >
-> ⚠️ **On dates/versions:** this guide cites fast-moving facts (CVE fix versions, regulatory
-> deadlines, tool GA states). Every such claim is flagged where it needs confirmation. Treat
-> standards-body facts (NIST/CIS/SLSA/CVEs) as solid; verify vendor/tooling specifics against current
-> docs before quoting in an audit or interview.
+> ✅ **Verification status:** ~45 date/version/CVE claims across this guide were adversarially
+> fact-checked against primary sources (NIST, CISA, FIRST, kubernetes.io, docker.com, sigstore.dev,
+> vendor advisories). Corrections applied: DCT retirement timeline (Docker vs Azure ACR separated),
+> AppArmor field GA (v1.31, not v1.30), Chainguard FIPS cert (140-3 #5132/#5102), ingress-nginx EOL
+> ("March 2026"), CycloneDX VEX lineage (since 1.4), and the Tetragon persistent-enforcement caveat.
+> Standards-body facts (NIST/CIS/SLSA/CVEs) verified solid. Still re-check the fastest-moving vendor
+> specifics against current docs before quoting in an audit or interview.
 
 ---
 
@@ -63,7 +66,7 @@ Attack surface scales with package count. Preference order:
 |:--|:--|:--|
 | **`scratch`** | Empty image | Static binaries (Go/Rust `CGO_ENABLED=0`). No shell/libc. |
 | **Distroless** (`gcr.io/distroless/*`) | Runtime-only | Variants `static`/`base`/`cc`/language; `:nonroot` (uid 65532), `:debug` (busybox). No shell/pkg-mgr. |
-| **Chainguard / Wolfi** | Minimal "undistro" (built via `apko`/`melange`) | Near-zero CVE, **rebuilt within ~hours** of upstream fixes, SBOM+provenance built in, **700+ FIPS variants** (STIG-hardened, OSCAP reports, OpenSSL FIPS CMVP #4282). |
+| **Chainguard / Wolfi** | Minimal "undistro" (built via `apko`/`melange`) | Near-zero CVE, **rebuilt within ~hours** of upstream fixes, SBOM+provenance built in, **700+ FIPS variants** (STIG-hardened, OSCAP reports; FIPS 140-3 OpenSSL provider CMVP #5132/#5102 since Mar 2026, superseding the older 140-2 #4282). |
 | **Docker Hardened Images (DHI)** | Docker's hardened catalog | Free/OSS (Apache-2.0) since **Dec 17 2025**; non-root default, SLSA provenance, signed **VEX** attestations. |
 | **Alpine** | musl+busybox ~5 MB | Tiny but has shell/apk; musl glibc-compat quirks (DNS). |
 | **`-slim`** | Trimmed glibc distro | Best compatibility, larger. |
@@ -188,8 +191,9 @@ Cumulative. **SLSA v1.1 approved Apr 2025** (clarifications, non-breaking). GitH
 Attestations, `slsa-github-generator`, and Google Cloud Build reach **L3**.
 
 **SBOM formats:** **SPDX** (ISO/IEC 5962; 3.0 graph-based/profiles, Apr 2024) favored for
-license/regulatory; **CycloneDX** (OWASP → now Ecma TC54; 1.6 Apr 2024, adds CBOM + native VEX +
-attestations) favored for security. Tooling (Syft/Trivy) emits both. **SPDX↔CycloneDX conversion is
+license/regulatory; **CycloneDX** (OWASP → now Ecma TC54; 1.6 Apr 2024 adds **CBOM** + **CDXA
+attestations** — note native VEX has existed since CycloneDX 1.4/2022) favored for security. Tooling
+(Syft/Trivy) emits both. **SPDX↔CycloneDX conversion is
 lossy** (protobom/`sbom-convert`/`cyclonedx-cli`) — never assert round-trip fidelity.
 
 ---
@@ -198,7 +202,7 @@ lossy** (protobom/`sbom-convert`/`cyclonedx-cli`) — never assert round-trip fi
 
 ### Sigstore / Cosign — keyless (modern default)
 No long-lived keys. **Fulcio** issues a short-lived (~10 min) cert binding an ephemeral key to an
-**OIDC** identity → sign → record in **Rekor** (append-only transparency log; **Rekor v2 GA 2025**,
+**OIDC** identity → sign → record in **Rekor** (append-only transparency log; **Rekor v2 GA Oct 10 2025**,
 tile-based). Private key lives in memory only. Roots of trust for Fulcio/Rekor distributed via **TUF**
 (supports private/air-gapped roots). Monitor with **rekor-monitor** (consistency proofs + alert on
 unexpected use of *your* signing identity).
@@ -216,9 +220,13 @@ Spec-driven, built on **X.509 cert chains** (enterprise PKI, not TUF); supports 
 Cosign for dev-friendly keyless.
 
 ### Docker Content Trust is retired — migrate off
-Deprecation began **Mar 31 2025**; certs expired **Aug 8 2025**; no new registries after
-**Sep 30 2025**; data deleted **Mar 31 2028**. Azure ACR: DCT can't be enabled on new registries from
-**May 31 2026**, removed **Mar 31 2028**. Migrate to **Cosign or Notation**.
+- **Docker's own timeline:** publicly announced retirement **Jul 29 2025**; the oldest Docker Official
+  Image DCT signing certs **begin expiring Aug 8 2025**; the underlying **Notary v1 service
+  (`notary.docker.io`) fully shuts down Dec 8 2026** (read/write brownouts Jul–Aug 2026).
+- **Azure Container Registry (separate schedule):** DCT deprecation started **Mar 31 2025**; **cannot
+  be enabled on new registries from May 31 2026** (an earlier "Sep 30 2025" figure was revised);
+  fully removed / data deleted **Mar 31 2028**.
+- Migrate to **Cosign** (keyless) or **Notation** (PKI/X.509).
 
 ---
 
@@ -490,7 +498,7 @@ commit is *not* enough (earlier commits, clones, CI caches, and **forks** persis
   - **Egress control / DNS anti-exfil:** egress gateways (static source IPs for external allow-listing);
     restrict which domains pods may *resolve* to kill DNS-tunnel C2.
 - **Ingress:** terminate TLS (cert-manager); WAF (ModSecurity CRS / cloud) + rate limit.
-  ⚠️ **`ingress-nginx` reached EOL Mar 24 2026** (no more CVE patches) — **migrate to Gateway API**
+  ⚠️ **`ingress-nginx` reaches EOL March 2026** (no more CVE patches; the Ingress *API* itself is only feature-frozen, not removed) — **migrate to Gateway API**
   (`ingress2gateway`) or kgateway/Envoy Gateway. Security-critical.
 
 ---
@@ -536,7 +544,7 @@ Falco is detection-only → route response downstream or enforce in-kernel:
   `:tcpdump`/`:sysdig` (forensics to S3). ⚠️ Talon is **pre-1.0** (v0.3.0) — validate before standardizing.
 - **Tetragon enforcement** (`TracingPolicy` `matchActions`): **`Sigkill`** (kill process) + **`Override`**
   (`argError` — syscall never executes). **Combine both** — a `SIGKILL` alone doesn't guarantee the
-  op didn't commit; `Override` needs `CONFIG_BPF_KPROBE_OVERRIDE`. Enforcement survives daemon restart
+  op didn't commit; `Override` needs `CONFIG_BPF_KPROBE_OVERRIDE`. Enforcement survives a daemon restart only with `--keep-sensors-on-exit` (not the default; pinned eBPF programs stay, event reporting pauses); otherwise enforcement
   (in-kernel). LSM hooks avoid the kprobe TOCTOU race.
 - **KubeArmor** (CNCF sandbox): LSM inline policy (AppArmor/BPF-LSM/SELinux) — allow/audit/block
   process/file/network/caps; `defaultPosture` Audit by default, flip to **block** for zero-trust
@@ -600,7 +608,7 @@ secrets:
   (odd number 3/5, no untrusted workloads). **`--autolock`** encrypts the Raft KEK at rest (manual
   `docker swarm unlock` per restart). Overlay data-plane is **not encrypted by default** →
   `--opt encrypted` (IPsec, ~12-h key rotation, CPU cost).
-- ⚠️ **CVE-2025-62725**: path traversal in Compose `include` with OCI artifacts → upgrade Compose
+- ⚠️ **CVE-2025-62725** (CVSS 8.9): path traversal via remote OCI Compose artifacts (`extends`/`envfile` layer annotations) → upgrade Compose
   ≥ v2.40.2. Engine **v29** has breaking changes (min API 1.44; broke some Swarm DNS/legacy volume
   plugins) — pin/validate before upgrading a prod Swarm.
 - **Swarm status:** Mirantis supports it through ~2030; little innovation since 2022 ("deprecated in
@@ -637,7 +645,7 @@ spec:
   replaced PodSecurityPolicy removed v1.25) via namespace labels
   `pod-security.kubernetes.io/{enforce|audit|warn}: {…}` — **pin `-version`** so upgrades don't tighten
   silently; roll out warn/audit → enforce.
-- **Version state:** seccomp `SeccompDefault` GA v1.27; AppArmor `appArmorProfile` field GA v1.30; user
+- **Version state:** seccomp `SeccompDefault` GA v1.27; AppArmor `appArmorProfile` field introduced v1.30, **GA v1.31**; user
   namespaces (`hostUsers: false`) beta/on-by-default v1.33 (verify GA per cluster);
   `supplementalGroupsPolicy` GA v1.35.
 - **ServiceAccount tokens:** `automountServiceAccountToken: false`; bound/projected tokens (default
@@ -667,7 +675,7 @@ Iron Bank images; OSCAP evidence). **PCI-DSS 4.0.1** — only active version sin
 future-dated 4.0 reqs mandatory **Mar 31 2025**: segment CDE (NetworkPolicy/namespaces), scan
 pre-deploy, no `privileged`, least-privilege RBAC + security contexts, read-only rootfs, logging.
 **FIPS 140-3** — validated crypto (RHEL UBI FIPS, **Chainguard FIPS** — OpenSSL FIPS provider
-CMVP #4282; note FIPS-validated ≠ STIG-hardened ≠ CVE-free). **SOC 2 / ISO 27001** — pipeline
+FIPS 140-3 provider CMVP #5132/#5102; note FIPS-validated ≠ STIG-hardened ≠ CVE-free). **SOC 2 / ISO 27001** — pipeline
 controls + evidence. **OpenSSF Scorecard / S2C2F**. **OWASP Docker Top 10** (D01–D10) & **Docker
 Security Cheat Sheet** (Rules 0–13) as design/ops checklists. **NSA/CISA Kubernetes Hardening Guide
 v1.2** (2022, still current).
